@@ -1,0 +1,27 @@
+[project]
+name = "silent-rag"
+version = "0.1.0"
+description = "Benchmark for label-free detection of retrieval degradation in RAG"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets",
+    "sentence-transformers",
+    "faiss-cpu",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "duckdb",
+    "matplotlib",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pre-commit", "nbstripout"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,19 @@
+# data, embeddings, caches: never commit these, they're all reproducible
+data/
+cache/
+results/*.parquet
+*.npy
+*.faiss
+
+# python
+__pycache__/
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# env / secrets
+.env
+
+.DS_Store

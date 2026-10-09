@@ -126,11 +126,19 @@ As a sanity check on the pipeline, exact cosine search in FAISS over the 300 lab
 ## Repository
 
 ```text
-notebooks/
-  scifact_eda.ipynb   dataset exploration and pilot retrieval check
+src/silent_rag/
+  types.py            Dataset, RetrievalState, Observation (no labels)
+  pipeline.py         embed, index, search
+  inject/             failure injectors (F1-F5, H1-H3)
+  detect/             label-free detectors
+  eval/               ground truth (nDCG drop, bootstrap) and the results table
+  run.py              experiment runner
+configs/              experiment configs
+notebooks/            exploration only
+tests/
 ```
 
-More will be added here as the pipeline, failure injection and detectors come together.
+Most of `src/` is still stubs. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and how we're working.
 
 **Stack:** sentence-transformers, FAISS, scikit-learn, SciPy, DuckDB, matplotlib
 
