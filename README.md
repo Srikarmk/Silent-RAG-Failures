@@ -60,7 +60,7 @@ Each failure is applied at increasing severity, from 10% up to 90% of the corpus
 | F4 | Query shift | Move query traffic toward topics outside the corpus |
 | F5 | Config mismatch | Drop the query prefix, turn off vector normalization, etc. |
 
-We also run three **harmless** changes. A good detector should stay quiet on these, so they tell us its false-alarm rate.
+We also run **negative controls**: changes that move the data around without hurting retrieval. A good detector should stay quiet on these, so they tell us its false-alarm rate. Which ones we use is still being decided in [#9](https://github.com/Srikarmk/Silent-RAG-Failures/issues/9).
 
 ## Detectors
 
@@ -114,14 +114,16 @@ As a sanity check on the pipeline, exact cosine search in FAISS over the 300 lab
 
 ## Timeline
 
-| Weeks | Milestone | Done when | Status |
+We wrap up on **December 1**. Each milestone below has its issues on the [project board](https://github.com/users/Srikarmk/projects/2).
+
+| Due | Milestone | Done when | Status |
 |---|---|---|---|
-| 1–2 | Baseline pipeline on SciFact, FiQA, NFCorpus | Model and chunking fixed; clean nDCG@10 with CIs | In progress |
-| 3–4 | Failure-injection harness (F1–F5 + 3 harmless) | nDCG@10 drops steadily with severity; harmless changes don't | |
-| 5–6 | Drift and QPP detectors | Implemented and tuned on NFCorpus | |
-| 7 | Canary, re-embedding check, LLM judge | Implemented, with cost per check recorded | |
-| 8 | Held-out evaluation | AUROC, earliness and false alarms on SciFact and FiQA; heatmap; PSI analysis | |
-| 9–10 | Agentic extension (optional), release | Benchmark, monitoring guide, final report | |
+| Oct 18 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | In progress |
+| Oct 31 | [Failure injection](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/2) | F1–F5 plus negative controls; nDCG@10 drops steadily with severity, negative controls don't | |
+| Nov 11 | [Drift + QPP detectors](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/3) | Implemented and tuned on NFCorpus | |
+| Nov 18 | [Canary, re-embed, LLM judge](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/4) | Implemented, with cost per check recorded for every detector | |
+| Nov 24 | [Held-out evaluation](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/5) | AUROC, earliness and false alarms on SciFact and FiQA; heatmap; PSI analysis | |
+| Dec 1 | [Release](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/6) | Benchmark, monitoring guide, final report (agentic extension only if there's time) | |
 
 ## Repository
 
