@@ -12,6 +12,7 @@ dependencies = [
     "scipy",
     "scikit-learn",
     "duckdb",
+    "pyarrow",
     "matplotlib",
     "pyyaml",
 ]
