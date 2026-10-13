@@ -1,7 +1,7 @@
 """Reproduce the NFCorpus 256-vs-512-token retrieval comparison (Issue #3).
 
 From the repository root:
-    python experiments/nfcorpus_retrieval.py
+    python experiments/baseline/nfcorpus_retrieval.py
 
 Writes per-query scores and run metadata under results/baseline/nfcorpus/.
 """
