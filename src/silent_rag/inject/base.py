@@ -12,6 +12,8 @@ class Injector(ABC):
     - never modify `state` in place, return a new one
     - same (severity, seed) must give the same result
     - severity is the fraction of the corpus or query traffic affected
+    - query positions stay fixed. See RetrievalState for when to reset
+      query_embeddings
     """
 
     name: str
@@ -25,5 +27,10 @@ REGISTRY: dict[str, type[Injector]] = {}
 
 
 def register(cls: type[Injector]) -> type[Injector]:
-    REGISTRY[cls.name] = cls
+    name = getattr(cls, "name", None)
+    if not isinstance(name, str) or not name:
+        raise TypeError(f"{cls.__name__} needs a `name` class attribute to be registered")
+    if name in REGISTRY and REGISTRY[name] is not cls:
+        raise ValueError(f"two injectors registered as {name!r}: {REGISTRY[name].__name__} and {cls.__name__}")
+    REGISTRY[name] = cls
     return cls

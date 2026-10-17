@@ -11,8 +11,11 @@ import pandas as pd
 @dataclass
 class ResultRow:
     dataset: str
-    failure: str  # "clean", "F1".."F5", "H1".."H3"
+    model: str
+    failure: str  # "clean" or the injector's registry name, same as the config key
+    expected_harmful: bool  # the injector's own flag: False for clean and H1-H3
     severity: float  # 0.0 for clean
+    seed: int  # with trial, pins down exactly which queries were in the window
     trial: int
     window_size: int
     detector: str

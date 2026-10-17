@@ -16,10 +16,10 @@ class HashEncoder:
     """Bag of words hashed into 64 dims. Deterministic and offline."""
 
     def __init__(self):
-        self.calls = 0
+        self.calls = 0  # corpus encodes only, queries don't count
 
     def encode(self, texts, batch_size=32, normalize_embeddings=True, convert_to_numpy=True):
-        self.calls += 1
+        self.calls += any("filler" in t for t in texts)
         out = np.zeros((len(texts), 64), dtype=np.float32)
         for i, t in enumerate(texts):
             for w in t.lower().split():
@@ -116,9 +116,81 @@ def test_runner_end_to_end(tmp_path, fake_plugins):
     by_sev = df[df.failure == "test_scramble"].groupby("severity").ndcg_drop.mean()
     assert by_sev[0.9] > by_sev[0.1] > 0
     assert df[df.severity == 0.9].harmful.all()
+    assert (df.expected_harmful == (df.failure != "clean")).all()
+    assert (df.model == "fake").all() and (df.seed == 0).all()
 
 
 def test_runner_names_missing_plugins():
     cfg = {"datasets": ["nfcorpus"], "failures": {"nope": [0.5]}, "detectors": [], "window_size": 5, "trials": 1}
     with pytest.raises(SystemExit, match="nope"):
+        runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
+
+
+def test_state_carries_query_embeddings(tmp_path):
+    state = Retriever("fake", encoder=HashEncoder()).embed_corpus(toy_dataset(), cache_dir=tmp_path)
+    assert state.query_embeddings.shape == (40, 64)
+
+
+def test_chunked_index_ranks_parent_docs_by_best_chunk(tmp_path):
+    r = Retriever("fake", encoder=HashEncoder())
+    state = r.embed_corpus(toy_dataset(), cache_dir=tmp_path)
+    # every doc split into a useless chunk and the real one
+    junk = r.encode(["zzz qqq filler"] * len(state.doc_ids))
+    chunked = dataclasses.replace(
+        state,
+        doc_ids=[f"{d}#{j}" for d in state.doc_ids for j in (0, 1)],
+        doc_embeddings=np.stack([junk, state.doc_embeddings], axis=1).reshape(-1, 64),
+        parent_ids=[d for d in state.doc_ids for _ in (0, 1)],
+    )
+    ids, scores, _ = r.search(chunked, k=5, query_embeddings=state.query_embeddings[:3])
+    assert [row[0] for row in ids] == ["d0", "d1", "d2"]
+    assert all(len(set(row)) == 5 for row in ids), "each doc shows up once"
+    flat_ids, flat_scores, _ = r.search(state, k=1, query_embeddings=state.query_embeddings[:3])
+    np.testing.assert_allclose(scores[:, 0], flat_scores[:, 0], rtol=1e-6)
+
+
+def test_register_needs_a_unique_name():
+    from silent_rag.inject.base import register
+
+    class NoName(Injector):
+        def apply(self, state, severity, seed):
+            return state
+
+    with pytest.raises(TypeError):
+        register(NoName)
+
+    class Clash(NoName):
+        name = "test_scramble"
+
+    INJECTORS["test_scramble"] = ScrambleDocs
+    try:
+        with pytest.raises(ValueError):
+            register(Clash)
+    finally:
+        del INJECTORS["test_scramble"]
+
+
+class RewriteQueries(Injector):
+    """Changes query texts but forgets to clear the embeddings."""
+
+    name = "test_rewrite"
+
+    def apply(self, state, severity, seed):
+        return dataclasses.replace(state, query_texts=[t + " shifted" for t in state.query_texts])
+
+
+def test_runner_catches_stale_query_embeddings(monkeypatch):
+    monkeypatch.setitem(INJECTORS, RewriteQueries.name, RewriteQueries)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    cfg = {"datasets": ["nfcorpus"], "failures": {"test_rewrite": [0.5]}, "detectors": ["test_mean_top1"],
+           "window_size": 10, "trials": 1}
+    with pytest.raises(RuntimeError, match="query_embeddings"):
+        runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
+
+
+@pytest.mark.parametrize("sev", [0.0, 1.5, -0.1])
+def test_severity_must_be_a_fraction(sev, fake_plugins):
+    cfg = {"datasets": ["nfcorpus"], "failures": {"test_scramble": [sev]}, "detectors": ["test_mean_top1"],
+           "window_size": 10, "trials": 1}
+    with pytest.raises(SystemExit, match="fraction"):
         runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
