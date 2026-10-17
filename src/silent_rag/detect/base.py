@@ -25,5 +25,10 @@ REGISTRY: dict[str, type[Detector]] = {}
 
 
 def register(cls: type[Detector]) -> type[Detector]:
-    REGISTRY[cls.name] = cls
+    name = getattr(cls, "name", None)
+    if not isinstance(name, str) or not name:
+        raise TypeError(f"{cls.__name__} needs a `name` class attribute to be registered")
+    if name in REGISTRY and REGISTRY[name] is not cls:
+        raise ValueError(f"two detectors registered as {name!r}: {REGISTRY[name].__name__} and {cls.__name__}")
+    REGISTRY[name] = cls
     return cls

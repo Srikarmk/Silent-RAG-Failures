@@ -64,12 +64,31 @@ def lookup(registry: dict, names, kind: str) -> dict:
     return {n: registry[n] for n in names}
 
 
+def check_severities(failures: dict) -> None:
+    bad = {f: s for f, sevs in failures.items() for s in sevs if not 0 < s <= 1}
+    if bad:
+        raise SystemExit(f"severity is the fraction affected and has to be in (0, 1], got {bad}")
+
+
+def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
+    if damaged.query_embeddings is None:
+        return retriever.embed_queries([damaged.query_texts[i] for i in idx])
+    if damaged.query_embeddings is clean.query_embeddings and damaged.query_texts != clean.query_texts:
+        raise RuntimeError(
+            "injector changed query_texts but kept the clean query_embeddings, set them to None"
+        )
+    return damaged.query_embeddings[idx]
+
+
 def observe(state, idx, topk_ids, topk_scores, query_embeddings) -> Observation:
     return Observation(
         query_ids=[state.query_ids[i] for i in idx],
         query_embeddings=query_embeddings,
         topk_ids=topk_ids,
         topk_scores=topk_scores,
+        query_texts=[state.query_texts[i] for i in idx],
+        doc_ids=state.doc_ids,
+        doc_texts=state.doc_texts,
         doc_embeddings=state.doc_embeddings,
     )
 
@@ -84,7 +103,7 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
     detectors = lookup(DETECTORS, cfg["detectors"], "detector")
 
     state = retriever.embed_corpus(ds)
-    clean_ids, clean_scores, clean_q = retriever.search(state, state.query_texts, k=k)
+    clean_ids, clean_scores, clean_q = retriever.search(state, k=k, query_embeddings=state.query_embeddings)
     clean_ndcg = per_query_ndcg(clean_ids, state.query_ids, ds.qrels, k)
 
     # The reference window the detectors are fit on never overlaps the windows they score.
@@ -116,7 +135,7 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
                 damaged = injector.apply(state, severity, seed=seed + trial)
                 assert len(damaged.query_ids) == len(state.query_ids), "injectors must keep query positions"
                 topk_ids, topk_scores, q_emb = retriever.search(
-                    damaged, [damaged.query_texts[i] for i in idx], k=k
+                    damaged, k=k, query_embeddings=window_queries(retriever, state, damaged, idx)
                 )
 
             # qrels are keyed by the clean query ids. What this means for F4 is still open (#13).
@@ -130,8 +149,11 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
                 rows.append(
                     ResultRow(
                         dataset=ds.name,
+                        model=state.config.get("model", ""),
                         failure=failure,
+                        expected_harmful=injector.harmful if injector else False,
                         severity=severity,
+                        seed=seed,
                         trial=trial,
                         window_size=window_size,
                         detector=name,
@@ -147,6 +169,7 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
 def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     datasets = check_datasets(cfg["datasets"], final)
     load_plugins()
+    check_severities(cfg.get("failures") or {})
     lookup(INJECTORS, cfg.get("failures") or {}, "injector")
     lookup(DETECTORS, cfg["detectors"], "detector")
     make_retriever = make_retriever or (lambda: Retriever(cfg["model"], **cfg.get("retriever", {})))
