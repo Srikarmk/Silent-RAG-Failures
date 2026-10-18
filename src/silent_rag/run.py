@@ -64,6 +64,17 @@ def lookup(registry: dict, names, kind: str) -> dict:
     return {n: registry[n] for n in names}
 
 
+def detector_params(entries) -> dict[str, dict]:
+    """configs list detectors as names, or {name: {param: value}} for ones that take parameters."""
+    params = {}
+    for entry in entries:
+        if isinstance(entry, str):
+            params[entry] = {}
+        else:
+            params.update({name: dict(kw or {}) for name, kw in entry.items()})
+    return params
+
+
 def check_severities(failures: dict) -> None:
     bad = {f: s for f, sevs in failures.items() for s in sevs if not 0 < s <= 1}
     if bad:
@@ -100,7 +111,8 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
     alpha = cfg.get("alpha", 0.05)
     failures = cfg.get("failures") or {}
     injectors = lookup(INJECTORS, failures, "injector")
-    detectors = lookup(DETECTORS, cfg["detectors"], "detector")
+    params = detector_params(cfg["detectors"])
+    detectors = lookup(DETECTORS, params, "detector")
 
     state = retriever.embed_corpus(ds)
     clean_ids, clean_scores, clean_q = retriever.search(state, k=k, query_embeddings=state.query_embeddings)
@@ -117,7 +129,8 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
     )
     fitted = {}
     for name, cls in detectors.items():
-        fitted[name] = cls()
+        fitted[name] = cls(**params[name])
+        fitted[name].attach(retriever)
         fitted[name].fit(reference)
 
     conditions = [("clean", 0.0)] + [(f, s) for f, sevs in failures.items() for s in sevs]
@@ -171,7 +184,7 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     load_plugins()
     check_severities(cfg.get("failures") or {})
     lookup(INJECTORS, cfg.get("failures") or {}, "injector")
-    lookup(DETECTORS, cfg["detectors"], "detector")
+    lookup(DETECTORS, detector_params(cfg["detectors"]), "detector")
     make_retriever = make_retriever or (lambda: Retriever(cfg["model"], **cfg.get("retriever", {})))
     rows = []
     for name in datasets:

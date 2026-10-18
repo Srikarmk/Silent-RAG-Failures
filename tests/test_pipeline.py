@@ -194,3 +194,44 @@ def test_severity_must_be_a_fraction(sev, fake_plugins):
            "window_size": 10, "trials": 1}
     with pytest.raises(SystemExit, match="fraction"):
         runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
+
+
+def test_detector_params_from_config():
+    assert runner.detector_params(["a", {"b": {"sample": 5}}, {"c": None}]) == {"a": {}, "b": {"sample": 5}, "c": {}}
+
+
+def test_re_embed_scores_zero_when_clean_and_grows_with_damage(tmp_path):
+    from silent_rag.detect.re_embed import ReEmbed
+
+    r = Retriever("fake", encoder=HashEncoder())
+    state = r.embed_corpus(toy_dataset(200), cache_dir=tmp_path)
+    idx = np.arange(20)
+
+    def window(s):
+        return runner.observe(s, idx, [[]] * len(idx), np.zeros((len(idx), 1)), s.query_embeddings[idx])
+
+    det = ReEmbed(sample=100)
+    det.attach(r)
+    det.fit(window(state))
+    assert det.reference_score_ == pytest.approx(0.0, abs=1e-6)
+    low = det.score(window(ScrambleDocs().apply(state, 0.2, seed=0)))
+    high = det.score(window(ScrambleDocs().apply(state, 0.8, seed=0)))
+    assert 0 < low < high
+    assert det.score(window(state)) == det.score(window(state)), "same window, same sample"
+
+
+def test_re_embed_runs_in_the_runner(fake_plugins):
+    from silent_rag.detect.re_embed import ReEmbed  # noqa: F401  registers it
+
+    cfg = {
+        "datasets": ["nfcorpus"],
+        "failures": {"test_scramble": [0.5]},
+        "detectors": [{"re_embed": {"sample": 30}}],
+        "window_size": 10,
+        "trials": 2,
+    }
+    df = runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
+    clean = df[df.failure == "clean"].score
+    damaged = df[df.failure == "test_scramble"].score
+    assert (clean.abs() < 1e-6).all() and (damaged > 0.05).all()
+    assert (df.cost_s > 0).all()

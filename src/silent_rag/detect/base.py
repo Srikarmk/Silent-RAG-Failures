@@ -14,6 +14,10 @@ class Detector(ABC):
 
     name: str
 
+    def attach(self, retriever) -> None:
+        """Called once before fit() with the clean retriever, i.e. the model the
+        system is supposed to be running. Only detectors that re-embed need it."""
+
     @abstractmethod
     def fit(self, reference: Observation) -> None: ...
 
