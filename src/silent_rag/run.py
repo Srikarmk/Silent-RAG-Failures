@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
+import json
 import pkgutil
 import time
 from pathlib import Path
@@ -75,6 +77,10 @@ def detector_params(entries) -> dict[str, dict]:
     return params
 
 
+def run_id(cfg: dict) -> str:
+    return hashlib.sha1(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
 def check_severities(failures: dict) -> None:
     bad = {f: s for f, sevs in failures.items() for s in sevs if not 0 < s <= 1}
     if bad:
@@ -109,6 +115,7 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
     window_size = cfg["window_size"]
     seed = cfg.get("seed", 0)
     alpha = cfg.get("alpha", 0.05)
+    rid = run_id(cfg)
     failures = cfg.get("failures") or {}
     injectors = lookup(INJECTORS, failures, "injector")
     params = detector_params(cfg["detectors"])
@@ -161,8 +168,10 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
                 score = det.score(window)
                 rows.append(
                     ResultRow(
+                        run_id=rid,
                         dataset=ds.name,
                         model=state.config.get("model", ""),
+                        model_revision=state.config.get("revision"),
                         failure=failure,
                         expected_harmful=injector.harmful if injector else False,
                         severity=severity,

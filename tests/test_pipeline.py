@@ -118,6 +118,8 @@ def test_runner_end_to_end(tmp_path, fake_plugins):
     assert df[df.severity == 0.9].harmful.all()
     assert (df.expected_harmful == (df.failure != "clean")).all()
     assert (df.model == "fake").all() and (df.seed == 0).all()
+    assert df.model_revision.isna().all() and df.run_id.nunique() == 1
+    assert runner.run_id(cfg) != runner.run_id({**cfg, "trials": 5})
 
 
 def test_runner_names_missing_plugins():
