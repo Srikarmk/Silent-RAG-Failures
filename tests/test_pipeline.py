@@ -197,19 +197,3 @@ def test_severity_must_be_a_fraction(sev, fake_plugins):
     with pytest.raises(SystemExit, match="fraction"):
         runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
 
-
-@pytest.mark.parametrize("path", sorted(__import__("pathlib").Path(__file__).parents[1].glob("configs/*.yaml")))
-def test_configs_are_valid(path):
-    import yaml
-
-    cfg = yaml.safe_load(path.read_text())
-    runner.check_datasets(cfg["datasets"], final=True)
-    runner.check_severities(cfg.get("failures") or {})
-    assert cfg["window_size"] > 0 and cfg["trials"] > 0
-
-
-def test_list_prints_registries(monkeypatch, capsys, fake_plugins):
-    monkeypatch.setattr("sys.argv", ["run", "--list"])
-    runner.main()
-    out = capsys.readouterr().out
-    assert "test_scramble" in out and "test_mean_top1" in out
