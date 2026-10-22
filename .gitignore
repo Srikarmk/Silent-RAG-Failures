@@ -17,3 +17,8 @@ venv/
 .env
 
 .DS_Store
+notebooks/shane*
+deck*
+.Rhistory
+CLAUDE.md
+results*
