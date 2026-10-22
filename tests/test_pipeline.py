@@ -196,4 +196,3 @@ def test_severity_must_be_a_fraction(sev, fake_plugins):
            "window_size": 10, "trials": 1}
     with pytest.raises(SystemExit, match="fraction"):
         runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
-
