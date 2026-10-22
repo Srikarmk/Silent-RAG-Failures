@@ -109,12 +109,14 @@ class Retriever:
             np.save(tmp, doc_embeddings)
             tmp.replace(path)
 
+        query_texts = [dataset.queries[q] for q in query_ids]
         return RetrievalState(
             doc_ids=doc_ids,
             doc_texts=doc_texts,
             doc_embeddings=doc_embeddings,
             query_ids=query_ids,
-            query_texts=[dataset.queries[q] for q in query_ids],
+            query_texts=query_texts,
+            query_embeddings=self.embed_queries(query_texts),
             config={**cfg, "cache_key": key},
         )
 
@@ -122,14 +124,51 @@ class Retriever:
         return self.encode([self.query_prefix + q for q in query_texts])
 
     def search(self, state: RetrievalState, query_texts=None, k: int = 10, query_embeddings=None):
-        """Top-k over the state's index. Returns (topk_ids, topk_scores, query_embeddings)."""
+        """Top-k over the state's index. Returns (topk_ids, topk_scores, query_embeddings).
+
+        With chunking (state.parent_ids set) the ids are parent docs ranked by
+        their best chunk, so nDCG is always computed on docs.
+        """
         import faiss
 
         if query_embeddings is None:
             query_embeddings = self.embed_queries(query_texts)
         index = faiss.IndexFlatIP(state.doc_embeddings.shape[1])
         index.add(np.ascontiguousarray(state.doc_embeddings, dtype=np.float32))
-        scores, positions = index.search(np.ascontiguousarray(query_embeddings, dtype=np.float32), k)
-        ids = np.asarray(state.doc_ids)
-        topk_ids = [list(ids[row[row >= 0]]) for row in positions]
-        return topk_ids, scores, query_embeddings
+        q = np.ascontiguousarray(query_embeddings, dtype=np.float32)
+
+        if state.parent_ids is None:
+            scores, positions = index.search(q, k)
+            ids = np.asarray(state.doc_ids)
+            return [list(ids[row[row >= 0]]) for row in positions], scores, query_embeddings
+
+        topk_ids, topk_scores = best_chunk_per_doc(index, q, state.parent_ids, k)
+        return topk_ids, topk_scores, query_embeddings
+
+
+def best_chunk_per_doc(index, q: np.ndarray, parent_ids: list[str], k: int):
+    """Search chunks, keep each doc's best-scoring chunk, return the top k docs.
+    Fetches more chunks until every query has k distinct docs (or the index runs out)."""
+    n = index.ntotal
+    n_docs = len(set(parent_ids))
+    fetch = min(n, 4 * k)
+    while True:
+        scores, positions = index.search(q, fetch)
+        topk_ids, topk_scores = [], np.full((len(q), k), -np.finfo(np.float32).max, dtype=np.float32)
+        short = False
+        for i, (row_s, row_p) in enumerate(zip(scores, positions)):
+            seen = []
+            for score, pos in zip(row_s, row_p):
+                if pos < 0:
+                    break
+                parent = parent_ids[pos]
+                if parent not in seen:
+                    topk_scores[i, len(seen)] = score
+                    seen.append(parent)
+                    if len(seen) == k:
+                        break
+            short |= len(seen) < min(k, n_docs)
+            topk_ids.append(seen)
+        if not short or fetch == n:
+            return topk_ids, topk_scores
+        fetch = min(n, fetch * 2)
