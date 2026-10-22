@@ -127,7 +127,7 @@ We wrap up on **December 1**. Each milestone below has its issues on the [projec
 
 ## Running it
 
-**Setup** (Python 3.10+)
+**Setup** (Python 3.10 to 3.14; 3.15 has no scikit-learn wheels yet, so the install fails there)
 
 ```bash
 git clone https://github.com/Srikarmk/Silent-RAG-Failures.git
