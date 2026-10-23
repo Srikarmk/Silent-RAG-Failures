@@ -23,7 +23,8 @@ class ResultRow:
     detector: str
     score: float
     ndcg_drop: float
-    harmful: bool  # significant drop under the paired bootstrap
+    harmful: bool  # p_value < alpha and ndcg_drop >= min_drop (config, default 0)
+    p_value: float  # one-sided paired bootstrap, kept so harmful can be re-thresholded later
     cost_s: float  # wall-clock seconds for this detector check
     cost_usd: float = 0.0  # only non-zero for API-based detectors (LLM judge)
 
