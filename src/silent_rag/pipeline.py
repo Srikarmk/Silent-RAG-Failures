@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -97,17 +98,14 @@ class Retriever:
             normalize=self.normalize,
             max_seq_length=self.max_seq_length,
             doc_text=cfg["doc_text"],
-            doc_ids=hashlib.sha1("\n".join(doc_ids).encode()).hexdigest(),
+            # ids and texts, so an edited corpus (new revision, perturbed copy) can't hit old vectors
+            corpus=hashlib.sha1("\0".join(doc_ids + doc_texts).encode()).hexdigest(),
         )
         path = (cache_dir or CACHE_DIR) / f"{dataset.name}-{key}.npy"
-        if path.exists():
-            doc_embeddings = np.load(path)
-        else:
+        doc_embeddings = load_cached(path, len(doc_ids))
+        if doc_embeddings is None:
             doc_embeddings = self.encode(doc_texts)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp.npy")
-            np.save(tmp, doc_embeddings)
-            tmp.replace(path)
+            save_cached(path, doc_embeddings)
 
         query_texts = [dataset.queries[q] for q in query_ids]
         return RetrievalState(
@@ -133,6 +131,9 @@ class Retriever:
 
         if query_embeddings is None:
             query_embeddings = self.embed_queries(query_texts)
+        n_docs = len(state.doc_ids) if state.parent_ids is None else len(set(state.parent_ids))
+        if not 1 <= k <= n_docs:
+            raise ValueError(f"k={k} but the index has {n_docs} docs")
         index = faiss.IndexFlatIP(state.doc_embeddings.shape[1])
         index.add(np.ascontiguousarray(state.doc_embeddings, dtype=np.float32))
         q = np.ascontiguousarray(query_embeddings, dtype=np.float32)
@@ -146,10 +147,36 @@ class Retriever:
         return topk_ids, topk_scores, query_embeddings
 
 
+def load_cached(path: Path, n_rows: int) -> np.ndarray | None:
+    """Cached vectors, or None if missing, unreadable or the wrong shape (then we re-embed)."""
+    try:
+        vecs = np.load(path)
+    except (OSError, ValueError, EOFError):
+        return None
+    return vecs if vecs.ndim == 2 and len(vecs) == n_rows else None
+
+
+def save_cached(path: Path, vecs: np.ndarray) -> None:
+    # unique tmp file per process, so two runs of the same setup can't clobber each other
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.stem + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            np.save(f, vecs)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def best_chunk_per_doc(index, q: np.ndarray, parent_ids: list[str], k: int):
     """Search chunks, keep each doc's best-scoring chunk, return the top k docs.
     Fetches more chunks until every query has k distinct docs (or the index runs out)."""
     n = index.ntotal
+    if len(parent_ids) != n:
+        raise ValueError(f"parent_ids has {len(parent_ids)} entries for {n} index rows")
     n_docs = len(set(parent_ids))
     fetch = min(n, 4 * k)
     while True:

@@ -19,6 +19,11 @@ class Injector(ABC):
     name: str
     harmful: bool = True  # False for the H1-H3 harmless changes
 
+    def attach(self, retriever) -> None:
+        """Called once per run with the clean retriever, before any apply(). The same
+        instance then handles every severity and trial, so expensive setup (a second
+        model's embeddings, a re-chunked corpus) belongs here or in a cache on self."""
+
     @abstractmethod
     def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState: ...
 

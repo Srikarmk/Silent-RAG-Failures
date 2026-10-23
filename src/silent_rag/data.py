@@ -25,7 +25,7 @@ SOURCES = {
         "repo": "BeIR/fiqa",
         "revision": "979c07a7cb5ccc6ca009792241fa1250b98055dd",
         "qrels": "BeIR/fiqa-qrels",
-        "qrels_revision": None,
+        "qrels_revision": "252958f2d646e22cab6d0c72dd3f0d5de6d0655a",
     },
 }
 
