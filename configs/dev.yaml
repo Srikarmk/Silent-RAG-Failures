@@ -5,7 +5,7 @@ retriever:
   revision: b207367332321f8e44f96e224ef15bc607f4dbf0
 failures:
   F1_partial_upgrade: [0.1, 0.5, 0.9]
-detectors: [ks_top1]
+detectors: [ks_top1, re_embed]
 window_size: 100
 trials: 20
 seed: 0

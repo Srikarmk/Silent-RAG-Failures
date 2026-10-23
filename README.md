@@ -147,7 +147,9 @@ python -m silent_rag.run --config configs/dev.yaml             # development run
 python -m silent_rag.run --config configs/final.yaml --final   # held-out run, SciFact + FiQA
 ```
 
-Datasets download from the Hugging Face Hub at pinned revisions. Corpus embeddings are cached under `cache/embeddings/` (or `$SILENT_RAG_CACHE`), keyed on everything that changes the vectors, so only the first run of a setup embeds the corpus. The runner refuses SciFact and FiQA unless `--final` is passed.
+Both configs name `F1_partial_upgrade` and `ks_top1`, which don't exist yet (#8). Until they land the runner stops with `no injector registered for ...`; `--list` shows what is available.
+
+Datasets (`nfcorpus`, `scifact`, `fiqa`) download from the Hugging Face Hub at pinned revisions. Corpus embeddings are cached under `cache/embeddings/` (or `$SILENT_RAG_CACHE/embeddings/`), keyed on the model, its revision, the settings that change the vectors and the corpus text itself, so only the first run of a setup embeds the corpus. The runner refuses SciFact and FiQA unless `--final` is passed.
 
 **Output.** One parquet file, `results/<config name>.parquet` (or `--out`), with one row per dataset × failure × severity × trial × detector:
 
@@ -158,7 +160,7 @@ Datasets download from the Hugging Face Hub at pinned revisions. Corpus embeddin
 | `failure`, `severity`, `expected_harmful` | the condition; `clean` has severity 0, negative controls have `expected_harmful = False` |
 | `seed`, `trial`, `window_size` | which query window was scored |
 | `detector`, `score` | the detector's output, higher = more likely broken |
-| `ndcg_drop`, `harmful` | ground truth: mean nDCG@10 drop on the window, and whether it is significant (paired bootstrap, α = 0.05) |
+| `ndcg_drop`, `p_value`, `harmful` | ground truth: mean nDCG@k drop on the window, the one-sided paired bootstrap p-value, and `harmful = p_value < alpha and ndcg_drop >= min_drop` |
 | `cost_s`, `cost_usd` | time per check, and API cost for the LLM judge |
 
 **Config**
@@ -173,7 +175,10 @@ detectors: [ks_top1, re_embed]
 window_size: 100
 trials: 20
 seed: 0
+# optional, with defaults: k: 10, alpha: 0.05, min_drop: 0.0
 ```
+
+Detectors that take parameters are listed as `{name: {param: value}}`, e.g. `- re_embed: {sample: 50, metric: l2}`. One setting per detector per run; use two runs to compare settings.
 
 **Adding a failure.** Put a module in `src/silent_rag/inject/`, subclass `Injector` and register it. The `name` is what the config and the results table use.
 
@@ -192,7 +197,9 @@ class MyFailure(Injector):
         return dataclasses.replace(state, doc_embeddings=emb)
 ```
 
-Keep query positions fixed. If the failure changes `query_texts`, set `query_embeddings=None` so the runner re-embeds them; if it changes how queries are encoded, edit `query_embeddings` directly. Expensive alternate embeddings (another model, re-chunked docs) should be computed once and cached, not per trial.
+Keep query positions fixed. If the failure changes `query_texts`, set `query_embeddings=None` so the runner re-embeds them with the clean model; if it changes how queries are encoded, edit `query_embeddings` yourself (`state.config` is descriptive, nothing reads it to re-encode). The index and query arrays are read-only during a run, so copy before changing them. With chunking, set `parent_ids` and keep `doc_ids`, `doc_texts` and `doc_embeddings` row-aligned.
+
+The runner makes one injector per failure and calls `attach(retriever)` on it once, then reuses it for every severity and trial. Put expensive setup there (a second model's embeddings for the whole corpus, a re-chunked corpus) and pick rows per trial in `apply`, rather than re-embedding inside every trial.
 
 **Adding a detector.** Same pattern in `src/silent_rag/detect/`:
 
@@ -210,7 +217,7 @@ class MyDetector(Detector):
         return float(self.ref - window.topk_scores[:, 0].mean())
 ```
 
-An `Observation` holds what a production system could log (query ids, texts and embeddings, top-k ids and scores, the index) and deliberately no qrels. New modules in `inject/` and `detect/` are picked up automatically.
+An `Observation` holds what a production system could log (query ids, texts and embeddings, top-k ids and scores, the index rows with their ids and texts) and deliberately no qrels. Treat it as read-only. A detector that needs to re-embed overrides `attach(retriever)`, which gets the clean retriever once before `fit()`. New modules in `inject/` and `detect/` are picked up automatically.
 
 ## Repository
 
