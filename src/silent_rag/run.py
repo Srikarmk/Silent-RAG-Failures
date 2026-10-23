@@ -190,10 +190,19 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
+    parser.add_argument("--config")
     parser.add_argument("--final", action="store_true")
     parser.add_argument("--out", help="parquet path, default results/<config name>.parquet")
+    parser.add_argument("--list", action="store_true", help="print the registered injectors and detectors")
     args = parser.parse_args()
+
+    if args.list:
+        load_plugins()
+        print("injectors:", ", ".join(sorted(INJECTORS)) or "none yet")
+        print("detectors:", ", ".join(sorted(DETECTORS)) or "none yet")
+        return
+    if not args.config:
+        parser.error("--config is required")
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
