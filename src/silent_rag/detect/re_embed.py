@@ -1,9 +1,21 @@
 """Re-embedding check (#25): re-embed a sample of indexed docs with the model the
-system is supposed to be running and compare to the stored vectors. If they
-disagree, the index is out of sync with the model (F1, F3).
+system is supposed to be running and compare to the stored vectors.
 
-Score = mean cosine distance between stored and fresh vectors. Costs one
-encode of `sample` docs per check, so sample size is the cost/accuracy knob.
+What it sees: stored vectors that the expected encoder and settings would not
+produce, i.e. docs embedded by another model or config (F1, a partial or stale
+re-index). What it can't see, by construction:
+- damage where every stored vector is correct for its text: stale docs that were
+  embedded properly (F2), a re-chunk embedded with the same model (F3)
+- anything on the query side (F4, F5 query prefix / normalization)
+It also fires on harmless re-indexes with a different model, since it measures
+"not what we expect", not harm. Negative controls that touch the doc model will
+false-alarm.
+
+metric="cosine" is direction only. metric="l2" (relative L2 error) also sees
+norm changes, e.g. doc vectors stored without normalization, which break
+inner-product ranking while leaving cosine at ~0.
+
+Costs one encode of `sample` docs per check, so sample size is the cost/accuracy knob.
 """
 
 from __future__ import annotations
@@ -22,29 +34,52 @@ def cosine_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return 1.0 - (a * b).sum(axis=1)
 
 
+def relative_l2(stored: np.ndarray, fresh: np.ndarray) -> np.ndarray:
+    return np.linalg.norm(stored - fresh, axis=1) / np.maximum(np.linalg.norm(fresh, axis=1), 1e-12)
+
+
+METRICS = {"cosine": cosine_distance, "l2": relative_l2}
+
+
 @register
 class ReEmbed(Detector):
     name = "re_embed"
 
-    def __init__(self, sample: int = 200, seed: int = 0):
+    def __init__(self, sample: int = 200, metric: str = "cosine", seed: int = 0):
+        if isinstance(sample, bool) or not isinstance(sample, int) or sample < 1:
+            raise ValueError(f"sample has to be a positive integer, got {sample!r}")
+        if metric not in METRICS:
+            raise ValueError(f"metric has to be one of {sorted(METRICS)}, got {metric!r}")
         self.sample = sample
+        self.metric = metric
         self.seed = seed
         self.retriever = None
 
     def attach(self, retriever) -> None:
         self.retriever = retriever
 
+    def rows(self, window: Observation) -> np.ndarray:
+        """Pick rows by a hash of (window, doc id) rather than by position, so the same
+        docs are sampled under every condition even when a failure adds rows (F2)."""
+        key = zlib.crc32("\n".join(window.query_ids).encode()) ^ self.seed
+        ranks = np.fromiter((zlib.crc32(d.encode(), key) for d in window.doc_ids), dtype=np.uint32,
+                            count=len(window.doc_ids))
+        return np.argsort(ranks, kind="stable")[: self.sample]
+
     def distances(self, window: Observation) -> np.ndarray:
         if self.retriever is None:
             raise RuntimeError("re_embed needs attach(retriever) before it can score")
-        if window.doc_texts is None or window.doc_embeddings is None:
-            raise ValueError("re_embed needs doc_texts and doc_embeddings in the Observation")
-        n = len(window.doc_texts)
-        # same window -> same sample, so repeated checks are comparable
-        key = zlib.crc32("\n".join(window.query_ids).encode())
-        rows = np.random.default_rng([self.seed, key]).choice(n, min(self.sample, n), replace=False)
+        if window.doc_texts is None or window.doc_embeddings is None or window.doc_ids is None:
+            raise ValueError("re_embed needs doc_ids, doc_texts and doc_embeddings in the Observation")
+        n = len(window.doc_embeddings)
+        if len(window.doc_texts) != n or len(window.doc_ids) != n:
+            raise ValueError(
+                f"index has {n} rows but {len(window.doc_texts)} doc_texts and {len(window.doc_ids)} doc_ids, "
+                "they have to be row-aligned"
+            )
+        rows = self.rows(window)
         fresh = self.retriever.encode([window.doc_texts[i] for i in rows])
-        return cosine_distance(np.asarray(window.doc_embeddings[rows], dtype=np.float32), fresh)
+        return METRICS[self.metric](np.asarray(window.doc_embeddings[rows], dtype=np.float32), fresh)
 
     def fit(self, reference: Observation) -> None:
         # nothing to learn, a clean index scores ~0. Kept so we can report the noise floor.

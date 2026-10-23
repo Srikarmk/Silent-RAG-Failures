@@ -71,9 +71,17 @@ def detector_params(entries) -> dict[str, dict]:
     params = {}
     for entry in entries:
         if isinstance(entry, str):
-            params[entry] = {}
+            items = [(entry, {})]
+        elif isinstance(entry, dict):
+            items = list(entry.items())
         else:
-            params.update({name: dict(kw or {}) for name, kw in entry.items()})
+            raise SystemExit(f"detector entries are names or {{name: {{param: value}}}}, got {entry!r}")
+        for name, kw in items:
+            if kw is not None and not isinstance(kw, dict):
+                raise SystemExit(f"parameters for {name} must be a mapping, got {kw!r}")
+            if name in params:
+                raise SystemExit(f"{name} is listed twice, one setting per detector per run")
+            params[name] = dict(kw or {})
     return params
 
 
@@ -193,7 +201,12 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     load_plugins()
     check_severities(cfg.get("failures") or {})
     lookup(INJECTORS, cfg.get("failures") or {}, "injector")
-    lookup(DETECTORS, detector_params(cfg["detectors"]), "detector")
+    params = detector_params(cfg["detectors"])
+    for name, cls in lookup(DETECTORS, params, "detector").items():
+        try:
+            cls(**params[name])  # catch a typo'd parameter now, not after embedding the corpus
+        except TypeError as e:
+            raise SystemExit(f"bad parameters for {name}: {e}") from None
     make_retriever = make_retriever or (lambda: Retriever(cfg["model"], **cfg.get("retriever", {})))
     rows = []
     for name in datasets:
