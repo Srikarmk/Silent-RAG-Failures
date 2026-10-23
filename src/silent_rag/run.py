@@ -66,6 +66,25 @@ def lookup(registry: dict, names, kind: str) -> dict:
     return {n: registry[n] for n in names}
 
 
+def detector_params(entries) -> dict[str, dict]:
+    """configs list detectors as names, or {name: {param: value}} for ones that take parameters."""
+    params = {}
+    for entry in entries:
+        if isinstance(entry, str):
+            items = [(entry, {})]
+        elif isinstance(entry, dict):
+            items = list(entry.items())
+        else:
+            raise SystemExit(f"detector entries are names or {{name: {{param: value}}}}, got {entry!r}")
+        for name, kw in items:
+            if kw is not None and not isinstance(kw, dict):
+                raise SystemExit(f"parameters for {name} must be a mapping, got {kw!r}")
+            if name in params:
+                raise SystemExit(f"{name} is listed twice, one setting per detector per run")
+            params[name] = dict(kw or {})
+    return params
+
+
 def run_id(cfg: dict) -> str:
     return hashlib.sha1(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
@@ -107,7 +126,8 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
     rid = run_id(cfg)
     failures = cfg.get("failures") or {}
     injectors = lookup(INJECTORS, failures, "injector")
-    detectors = lookup(DETECTORS, cfg["detectors"], "detector")
+    params = detector_params(cfg["detectors"])
+    detectors = lookup(DETECTORS, params, "detector")
 
     state = retriever.embed_corpus(ds)
     clean_ids, clean_scores, clean_q = retriever.search(state, k=k, query_embeddings=state.query_embeddings)
@@ -124,7 +144,8 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
     )
     fitted = {}
     for name, cls in detectors.items():
-        fitted[name] = cls()
+        fitted[name] = cls(**params[name])
+        fitted[name].attach(retriever)
         fitted[name].fit(reference)
 
     conditions = [("clean", 0.0)] + [(f, s) for f, sevs in failures.items() for s in sevs]
@@ -180,7 +201,12 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     load_plugins()
     check_severities(cfg.get("failures") or {})
     lookup(INJECTORS, cfg.get("failures") or {}, "injector")
-    lookup(DETECTORS, cfg["detectors"], "detector")
+    params = detector_params(cfg["detectors"])
+    for name, cls in lookup(DETECTORS, params, "detector").items():
+        try:
+            cls(**params[name])  # catch a typo'd parameter now, not after embedding the corpus
+        except TypeError as e:
+            raise SystemExit(f"bad parameters for {name}: {e}") from None
     make_retriever = make_retriever or (lambda: Retriever(cfg["model"], **cfg.get("retriever", {})))
     rows = []
     for name in datasets:

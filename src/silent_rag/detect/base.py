@@ -14,6 +14,10 @@ class Detector(ABC):
 
     name: str
 
+    def attach(self, retriever) -> None:
+        """Called once before fit() with the clean retriever, i.e. the model the
+        system is supposed to be running. Only detectors that re-embed need it."""
+
     @abstractmethod
     def fit(self, reference: Observation) -> None: ...
 
@@ -28,7 +32,9 @@ def register(cls: type[Detector]) -> type[Detector]:
     name = getattr(cls, "name", None)
     if not isinstance(name, str) or not name:
         raise TypeError(f"{cls.__name__} needs a `name` class attribute to be registered")
-    if name in REGISTRY and REGISTRY[name] is not cls:
+    old = REGISTRY.get(name)
+    # re-importing the same class (importlib.reload, notebook autoreload) is fine, two different classes aren't
+    if old is not None and old is not cls and (old.__module__, old.__qualname__) != (cls.__module__, cls.__qualname__):
         raise ValueError(f"two detectors registered as {name!r}: {REGISTRY[name].__name__} and {cls.__name__}")
     REGISTRY[name] = cls
     return cls
