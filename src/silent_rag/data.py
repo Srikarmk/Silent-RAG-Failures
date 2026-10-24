@@ -54,3 +54,12 @@ def load(name: str, split: str = "test") -> Dataset:
         queries={q: query_text[q] for q in qrels},
         qrels=qrels,
     )
+
+
+def load_beir(name: str) -> Dataset:
+    """Load a BEIR dataset using test-split relevance judgments.
+
+    The runner keeps using ``load`` for compatibility. This explicit entry point
+    makes the intended evaluation split clear to other callers.
+    """
+    return load(name, split="test")
