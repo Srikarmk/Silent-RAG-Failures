@@ -132,9 +132,14 @@ def frozen(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
+def doc_tuples(state):
+    parents = None if state.parent_ids is None else tuple(state.parent_ids)
+    return tuple(state.doc_ids), tuple(state.doc_texts), parents
+
+
 def observe(state, idx, topk_ids, topk_scores, query_embeddings, docs=None) -> Observation:
-    """docs: (doc_ids, doc_texts) as tuples, pass them in to avoid re-copying a big corpus."""
-    doc_ids, doc_texts = docs or (tuple(state.doc_ids), tuple(state.doc_texts))
+    """docs: doc_tuples(state), pass it in to avoid re-copying a big corpus every window."""
+    doc_ids, doc_texts, parent_ids = docs or doc_tuples(state)
     return Observation(
         query_ids=[state.query_ids[i] for i in idx],
         query_embeddings=frozen(query_embeddings),
@@ -144,13 +149,14 @@ def observe(state, idx, topk_ids, topk_scores, query_embeddings, docs=None) -> O
         doc_ids=doc_ids,
         doc_texts=doc_texts,
         doc_embeddings=state.doc_embeddings,
+        parent_ids=parent_ids,
     )
 
 
 def docs_of(state, clean, clean_docs):
-    if state.doc_ids is clean.doc_ids and state.doc_texts is clean.doc_texts:
+    if state.doc_ids is clean.doc_ids and state.doc_texts is clean.doc_texts and state.parent_ids is clean.parent_ids:
         return clean_docs
-    return tuple(state.doc_ids), tuple(state.doc_texts)
+    return doc_tuples(state)
 
 
 def injector_seed(seed: int, trial: int) -> int:
@@ -158,18 +164,18 @@ def injector_seed(seed: int, trial: int) -> int:
     return int(np.random.SeedSequence([seed, trial]).generate_state(1)[0])
 
 
-def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
+def run_dataset(ds, retriever, cfg, rid: str | None = None) -> list[ResultRow]:
     cfg = {**DEFAULTS, **cfg}
     k, seed, alpha, min_drop = cfg["k"], cfg["seed"], cfg["alpha"], cfg["min_drop"]
     window_size = cfg["window_size"]
-    rid = run_id(cfg)
+    rid = rid or run_id(cfg)
     failures = cfg.get("failures") or {}
     injectors = lookup(INJECTORS, failures, "injector")
     params = detector_params(cfg["detectors"])
     detectors = lookup(DETECTORS, params, "detector")
 
     state = read_only(retriever.embed_corpus(ds))
-    clean_docs = (tuple(state.doc_ids), tuple(state.doc_texts))
+    clean_docs = doc_tuples(state)
     clean_ids, clean_scores, clean_q = retriever.search(state, k=k, query_embeddings=state.query_embeddings)
     clean_ndcg = per_query_ndcg(clean_ids, state.query_ids, ds.qrels, k)
 
@@ -244,8 +250,24 @@ def run_dataset(ds, retriever, cfg) -> list[ResultRow]:
     return rows
 
 
+def run_seeds(cfg: dict) -> list[int]:
+    """`seeds: [0, 1, 2]` repeats the whole run with independent windows, reference
+    window and damage, so results have real replicates to bootstrap over (#17)."""
+    if "seeds" not in cfg:
+        return [cfg.get("seed", DEFAULTS["seed"])]
+    if "seed" in cfg:
+        raise SystemExit("give either seed or seeds, not both")
+    seeds = cfg["seeds"]
+    if not isinstance(seeds, list) or not seeds or not all(isinstance(s, int) and not isinstance(s, bool) for s in seeds):
+        raise SystemExit(f"seeds must be a non-empty list of integers, got {seeds!r}")
+    if len(set(seeds)) != len(seeds):
+        raise SystemExit(f"seeds has duplicates: {seeds}")
+    return seeds
+
+
 def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     datasets = check_datasets(cfg["datasets"], final)
+    seeds = run_seeds(cfg)
     load_plugins()
     check_severities(cfg.get("failures") or {})
     lookup(INJECTORS, cfg.get("failures") or {}, "injector")
@@ -256,9 +278,17 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
         except TypeError as e:
             raise SystemExit(f"bad parameters for {name}: {e}") from None
     make_retriever = make_retriever or (lambda: Retriever(cfg["model"], **cfg.get("retriever", {})))
+    # one run_id for all seeds, so the replicates can be grouped together
+    hashed = {**DEFAULTS, **cfg}
+    if "seeds" in cfg:
+        hashed.pop("seed")
+    rid = run_id(hashed)
+    per_seed = {key: v for key, v in cfg.items() if key != "seeds"}
     rows = []
     for name in datasets:
-        rows += run_dataset(loader(name), make_retriever(), cfg)
+        ds, retriever = loader(name), make_retriever()
+        for seed in seeds:
+            rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, rid=rid)
     return to_frame(rows)
 
 

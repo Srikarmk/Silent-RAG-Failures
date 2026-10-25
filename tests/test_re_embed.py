@@ -8,7 +8,7 @@ from silent_rag import run as runner
 from silent_rag.detect import re_embed
 from silent_rag.detect.re_embed import ReEmbed
 from silent_rag.pipeline import Retriever
-from test_pipeline import HashEncoder, toy_dataset
+from test_pipeline import HashEncoder, ScrambleDocs, toy_dataset
 
 
 @pytest.fixture
@@ -78,3 +78,20 @@ def test_config_mistakes_fail_before_any_work():
 def test_module_reload_does_not_break_the_registry():
     importlib.reload(re_embed)
     importlib.reload(re_embed)
+
+
+def test_floor_makes_clean_exactly_zero_but_keeps_real_damage(setup):
+    r, state, det = setup
+    # ~3e-6 in cosine: visible without a floor, below the 1e-5 floor, like batch / device noise
+    noisy = (state.doc_embeddings + np.random.default_rng(0).normal(0, 3e-4, state.doc_embeddings.shape)).astype(np.float32)
+    assert det.score(window(dataclasses.replace(state, doc_embeddings=noisy))) == 0.0
+    no_floor = ReEmbed(sample=100, floor=0)
+    no_floor.attach(r)
+    assert no_floor.score(window(dataclasses.replace(state, doc_embeddings=noisy))) > 0
+    assert det.score(window(ScrambleDocs().apply(state, 0.2, seed=0))) > 0.01
+
+
+@pytest.mark.parametrize("floor", [-1e-3, 1.0, "0.1", True])
+def test_bad_floor_is_rejected(floor):
+    with pytest.raises(ValueError):
+        ReEmbed(floor=floor)
