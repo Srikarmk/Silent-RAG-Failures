@@ -15,6 +15,12 @@ metric="cosine" is direction only. metric="l2" (relative L2 error) also sees
 norm changes, e.g. doc vectors stored without normalization, which break
 inner-product ranking while leaving cosine at ~0.
 
+Per-row distances below `floor` count as 0. Re-encoding the same text in a
+different batch moves vectors by ~1e-7 in cosine (~5e-4 in relative L2), so
+without a floor a clean index scores float noise and any threshold calibrated on
+clean windows sits inside that noise. With it, a clean index scores exactly 0;
+use a threshold above 0.
+
 Costs one encode of `sample` docs per check, so sample size is the cost/accuracy knob.
 """
 
@@ -39,19 +45,25 @@ def relative_l2(stored: np.ndarray, fresh: np.ndarray) -> np.ndarray:
 
 
 METRICS = {"cosine": cosine_distance, "l2": relative_l2}
+# well above batch/device float noise, well below any real model or config change (~0.1+)
+FLOORS = {"cosine": 1e-5, "l2": 5e-3}
 
 
 @register
 class ReEmbed(Detector):
     name = "re_embed"
 
-    def __init__(self, sample: int = 200, metric: str = "cosine", seed: int = 0):
+    def __init__(self, sample: int = 200, metric: str = "cosine", seed: int = 0, floor: float | None = None):
         if isinstance(sample, bool) or not isinstance(sample, int) or sample < 1:
             raise ValueError(f"sample has to be a positive integer, got {sample!r}")
         if metric not in METRICS:
             raise ValueError(f"metric has to be one of {sorted(METRICS)}, got {metric!r}")
+        floor = FLOORS[metric] if floor is None else floor
+        if isinstance(floor, bool) or not isinstance(floor, (int, float)) or not 0 <= floor < 1:
+            raise ValueError(f"floor has to be a number in [0, 1), got {floor!r}")
         self.sample = sample
         self.metric = metric
+        self.floor = float(floor)
         self.seed = seed
         self.retriever = None
 
@@ -79,7 +91,8 @@ class ReEmbed(Detector):
             )
         rows = self.rows(window)
         fresh = self.retriever.encode([window.doc_texts[i] for i in rows])
-        return METRICS[self.metric](np.asarray(window.doc_embeddings[rows], dtype=np.float32), fresh)
+        d = METRICS[self.metric](np.asarray(window.doc_embeddings[rows], dtype=np.float32), fresh)
+        return np.where(d < self.floor, 0.0, d)
 
     def fit(self, reference: Observation) -> None:
         # nothing to learn, a clean index scores ~0. Kept so we can report the noise floor.

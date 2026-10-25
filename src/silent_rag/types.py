@@ -60,3 +60,4 @@ class Observation:
     doc_ids: list[str] | None = None
     doc_texts: list[str] | None = None
     doc_embeddings: np.ndarray | None = None
+    parent_ids: list[str] | None = None  # doc id per row when chunked; topk_ids are always parent docs

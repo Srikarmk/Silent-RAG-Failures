@@ -178,9 +178,10 @@ window_size: 100
 trials: 20
 seed: 0
 # optional, with defaults: k: 10, alpha: 0.05, min_drop: 0.0
+# seeds: [0, 1, 2] instead of seed repeats the whole run (windows, reference window, damage) under one run_id
 ```
 
-Detectors that take parameters are listed as `{name: {param: value}}`, e.g. `- re_embed: {sample: 50, metric: l2}`. One setting per detector per run; use two runs to compare settings.
+Detectors that take parameters are listed as `{name: {param: value}}`, e.g. `- re_embed: {sample: 50, metric: l2}`. `re_embed` treats per-doc distances below a noise floor as 0 (`floor`, default 1e-5 for cosine and 5e-3 for l2), so a clean index scores exactly 0 and thresholds should be above 0. One setting per detector per run; use two runs to compare settings.
 
 **Adding a failure.** Put a module in `src/silent_rag/inject/`, subclass `Injector` and register it. The `name` is what the config and the results table use.
 
