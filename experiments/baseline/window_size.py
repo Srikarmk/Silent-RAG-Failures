@@ -3,12 +3,14 @@
 From the repository root:
     python experiments/baseline/window_size.py              # NFCorpus only
     python experiments/baseline/window_size.py --held-out   # + clean CIs on SciFact and FiQA
+    python experiments/baseline/window_size.py --max-seq-length 512   # the original #39 numbers
 
 The window-size analysis only ever runs on NFCorpus, since picking the window is
 tuning. --held-out only adds the clean-baseline CI for SciFact and FiQA, nothing
 gets chosen from those numbers.
 
-Writes under results/baseline/window_size/.
+Docs are truncated at --max-seq-length tokens, 256 by default (#5). Writes under
+results/baseline/window_size/msl<length>/.
 """
 
 from __future__ import annotations
@@ -87,12 +89,14 @@ def main():
     parser.add_argument("--churn", type=float, nargs="+", default=[0.0, 0.25])
     parser.add_argument("--trials", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--max-seq-length", type=int, default=256, help="doc truncation in tokens, 256 per #5")
     args = parser.parse_args()
 
-    retriever = Retriever(MODEL, revision=MODEL_REVISION)
+    retriever = Retriever(MODEL, revision=MODEL_REVISION, max_seq_length=args.max_seq_length)
     datasets = ["nfcorpus"] + (["scifact", "fiqa"] if args.held_out else [])
     check_datasets(datasets, final=args.held_out)
-    OUT.mkdir(parents=True, exist_ok=True)
+    out = OUT / f"msl{args.max_seq_length}"
+    out.mkdir(parents=True, exist_ok=True)
 
     baselines = {}
     per_query = {}
@@ -109,11 +113,11 @@ def main():
             "seconds": round(seconds, 1),
         }
         print(f"{name}: nDCG@10 = {mean:.4f} [{lo:.4f}, {hi:.4f}] over {len(scores)} queries")
-        pd.DataFrame({"ndcg@10": scores}).to_csv(OUT / f"{name}_per_query.csv", index_label="position")
+        pd.DataFrame({"ndcg@10": scores}).to_csv(out / f"{name}_per_query.csv", index_label="position")
 
     print("window sizes on nfcorpus")
     table = window_table(per_query["nfcorpus"], args.windows, args.churn, args.trials, args.seed)
-    table.to_csv(OUT / "nfcorpus_detection.csv", index=False)
+    table.to_csv(out / "nfcorpus_detection.csv", index=False)
     summary = summarize(table, baselines["nfcorpus"]["ndcg@10"])
 
     record = {
@@ -135,7 +139,7 @@ def main():
         "ci_method": "percentile bootstrap over queries, 10000 resamples, seed 0",
         "platform": platform.platform(),
     }
-    (OUT / "summary.json").write_text(json.dumps(record, indent=2) + "\n")
+    (out / "summary.json").write_text(json.dumps(record, indent=2) + "\n")
     print(pd.DataFrame(summary).to_string(index=False))
 
 
