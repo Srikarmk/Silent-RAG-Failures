@@ -13,6 +13,8 @@ pytest
 
 `pre-commit install` sets up nbstripout, which clears notebook outputs when you commit. Without it, two people touching the same notebook means a merge conflict every time.
 
+On Windows (PowerShell), activate with `.venv\Scripts\Activate.ps1` instead (see the README if PowerShell blocks the script).
+
 On a Mac, if anything that uses both faiss and torch just exits with no error, run it with `KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1`.
 
 ## Who's on what (for now)

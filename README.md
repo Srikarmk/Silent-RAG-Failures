@@ -137,6 +137,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
+On Windows (PowerShell), activate with `.venv\Scripts\Activate.ps1` instead of `source .venv/bin/activate`. If PowerShell refuses to run the script, allow it for the current session first with `Set-ExecutionPolicy -Scope Process RemoteSigned`.
+
 On a Mac, if anything that uses both faiss and torch exits with no error, prefix commands with `KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1`.
 
 **Run**
