@@ -1,10 +1,11 @@
 # Held-out evaluation (#29). Needs --final:
 #   python -m silent_rag.run --config configs/final.yaml --final
-# Model and window size follow #5 and #4; update them here once those are settled.
+# Model and doc length from #5, window size from #4; keep the retriever block identical to dev.yaml.
 datasets: [scifact, fiqa]
 model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
 retriever:
   revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256  # title + text truncated at 256 tokens, no chunking (#5)
 failures:
   F1_partial_upgrade: [0.1, 0.3, 0.5, 0.7, 0.9]
   # F2-F5 and the H1-H3 negative controls go here as their injectors land

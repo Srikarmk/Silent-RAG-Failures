@@ -42,3 +42,11 @@ def test_list_prints_registries(monkeypatch, capsys):
     runner.main()
     out = capsys.readouterr().out
     assert "test_inj" in out and "test_det" in out
+
+
+def test_dev_and_final_use_the_same_retriever():
+    """Whatever we tune on NFCorpus has to be what runs on the held-out sets."""
+    dev, final = (yaml.safe_load((CONFIGS[0].parent / f"{n}.yaml").read_text()) for n in ("dev", "final"))
+    for key in ("model", "retriever", "window_size"):
+        assert dev[key] == final[key], key
+    assert dev["retriever"]["max_seq_length"] == 256
