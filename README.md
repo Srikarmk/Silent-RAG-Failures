@@ -118,7 +118,7 @@ Query length is not a concern. Document length is: most abstracts are longer tha
 | SciFact | 300 | 0.546 | 0.496–0.595 |
 | FiQA | 648 | 0.360 | 0.332–0.387 |
 
-Truncating at 256 instead of 512 tokens made no significant difference on any of the three, and encoding is about 2.4× faster.
+Truncating at 256 instead of 512 tokens made no significant difference on any of the three.
 
 **Window size.** Each check scores a window of **100 queries** ([#4](https://github.com/Srikarmk/Silent-RAG-Failures/issues/4)). On NFCorpus, that's enough for the paired bootstrap to catch an nDCG@10 drop of about 0.06 in 80% of windows while staying under a 5% false-alarm rate. Windows of 25 or 50 queries only reliably catch drops of 0.10–0.13, and alarm more often than 5%. Both analyses are in [`experiments/baseline/window_size.py`](experiments/baseline/window_size.py).
 
@@ -128,7 +128,7 @@ We wrap up on **December 1**. Each milestone below has its issues on the [projec
 
 | Due | Milestone | Done when | Status |
 |---|---|---|---|
-| Oct 18 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | Done(#8 pending) |
+| Oct 18 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | Done (#8 pending) |
 | Oct 31 | [Failure injection](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/2) | F1–F5 plus negative controls; nDCG@10 drops steadily with severity, negative controls don't | |
 | Nov 11 | [Drift + QPP detectors](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/3) | Implemented and tuned on NFCorpus | |
 | Nov 18 | [Canary, re-embed, LLM judge](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/4) | Implemented, with cost per check recorded for every detector | |
