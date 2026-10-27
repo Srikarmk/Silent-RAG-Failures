@@ -4,7 +4,7 @@
 
 **Detecting retrieval degradation in RAG systems without relevance labels**
 
-![Status](https://img.shields.io/badge/status-proposal-f59e0b?style=flat-square)
+![Status](https://img.shields.io/badge/status-in%20progress-3b82f6?style=flat-square)
 ![Course](https://img.shields.io/badge/DS5500-Fall%202026-4f46e5?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?style=flat-square&logo=python&logoColor=white)
 ![Data](https://img.shields.io/badge/data-BEIR-10b981?style=flat-square)
@@ -99,7 +99,7 @@ SciFact and FiQA are never used for tuning, so the final numbers show how well t
 
 ## Early results
 
-Our first pass over SciFact is in [`notebooks/scifact_eda.ipynb`](notebooks/scifact_eda.ipynb). It uses `multi-qa-MiniLM-L6-cos-v1` as a placeholder model.
+Our first pass over SciFact is in [`notebooks/scifact_eda.ipynb`](notebooks/scifact_eda.ipynb), using `multi-qa-MiniLM-L6-cos-v1`.
 
 | | Queries | Documents |
 |---|---:|---:|
@@ -108,9 +108,19 @@ Our first pass over SciFact is in [`notebooks/scifact_eda.ipynb`](notebooks/scif
 | Longer than 512 tokens (the model's hard limit) | 0 | 455 (8.8%) |
 | Longer than ~250 tokens (what the model was trained on) | 0 | 3,793 (73.2%) |
 
-Query length is not a concern. Document length is: most abstracts are longer than the inputs this model was trained on. This will shape how we choose the final model and chunking strategy.
+Query length is not a concern. Document length is: most abstracts are longer than the inputs this model was trained on.
 
-As a sanity check on the pipeline, exact cosine search in FAISS over the 300 labeled test queries gives **nDCG@10 = 0.540** (95% bootstrap CI: 0.491–0.588). This isn't our baseline yet, since the model and document handling haven't been fixed.
+**Baseline.** We kept `multi-qa-MiniLM-L6-cos-v1` and embed title + text truncated at 256 tokens, with no chunking ([#5](https://github.com/Srikarmk/Silent-RAG-Failures/issues/5)). The goal is to evaluate detectors, not to get the best retriever. Clean nDCG@10 with exact cosine search in FAISS:
+
+| Dataset | Test queries | nDCG@10 | 95% bootstrap CI |
+|---|---:|---:|---|
+| NFCorpus | 323 | 0.292 | 0.259–0.325 |
+| SciFact | 300 | 0.546 | 0.496–0.595 |
+| FiQA | 648 | 0.360 | 0.332–0.387 |
+
+Truncating at 256 instead of 512 tokens made no significant difference on any of the three.
+
+**Window size.** Each check scores a window of **100 queries** ([#4](https://github.com/Srikarmk/Silent-RAG-Failures/issues/4)). On NFCorpus, that's enough for the paired bootstrap to catch an nDCG@10 drop of about 0.06 in 80% of windows while staying under a 5% false-alarm rate. Windows of 25 or 50 queries only reliably catch drops of 0.10–0.13, and alarm more often than 5%. Both analyses are in [`experiments/baseline/window_size.py`](experiments/baseline/window_size.py).
 
 ## Timeline
 
@@ -118,7 +128,7 @@ We wrap up on **December 1**. Each milestone below has its issues on the [projec
 
 | Due | Milestone | Done when | Status |
 |---|---|---|---|
-| Oct 18 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | In progress |
+| Oct 18 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | Done (#8 pending) |
 | Oct 31 | [Failure injection](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/2) | F1–F5 plus negative controls; nDCG@10 drops steadily with severity, negative controls don't | |
 | Nov 11 | [Drift + QPP detectors](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/3) | Implemented and tuned on NFCorpus | |
 | Nov 18 | [Canary, re-embed, LLM judge](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/4) | Implemented, with cost per check recorded for every detector | |
