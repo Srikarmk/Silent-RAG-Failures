@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Silent Failures: detecting RAG retrieval damage without labels</title>
+<meta name="description" content="A DS5500 benchmark that breaks RAG retrieval on purpose and tests which label-free signals notice.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<script>document.documentElement.classList.add('js')</script>
+</head>
+<body>
+
+<header class="bar">
+  <a class="wordmark" href="#top">Silent Failures</a>
+  <nav aria-label="Sections">
+    <a href="#how">How it works</a>
+    <a href="#failures">Failures</a>
+    <a href="#detectors">Detectors</a>
+    <a href="#status">Status</a>
+    <a class="button button--small" href="https://github.com/Srikarmk/Silent-RAG-Failures">GitHub</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<section class="hero" aria-labelledby="hero-title">
+  <div class="hero__stage">
+    <h1 id="hero-title" class="hero__title">
+      <span class="hero__half hero__half--a">No errors.</span>
+      <span class="hero__half hero__half--b">Worse answers.</span>
+    </h1>
+
+    <div class="hero__frame">
+      <div class="hero__reel" aria-hidden="true">
+        <div class="sliver sliver--prev"><span data-prev></span></div>
+        <div class="sliver sliver--next"><span data-next></span></div>
+      </div>
+      <div class="monitor" data-ui>
+        <div class="monitor__status">
+          <span class="ok">Index healthy</span>
+          <span><b>3,633</b> docs</span>
+          <span><b>0</b> errors</span>
+          <span><b>323 / 323</b> queries answered</span>
+        </div>
+
+        <label class="monitor__control">
+          <span class="monitor__label">Partial embedding upgrade (F1): docs re-embedded with a different model</span>
+          <span class="monitor__slider">
+            <input type="range" min="0" max="9" step="1" value="0" data-sev aria-describedby="sev-out">
+            <output id="sev-out" data-sev-out>0%</output>
+          </span>
+        </label>
+
+        <div class="monitor__query">
+          <span class="monitor__label">Query</span>
+          <div class="tabs" role="tablist" data-tabs></div>
+        </div>
+
+        <ol class="results" data-results></ol>
+
+        <div class="monitor__foot">
+          <div class="readout readout--labels">
+            <span class="monitor__label">nDCG@10, all 323 queries (needs labels)</span>
+            <span class="readout__value"><b data-ndcg>0.292</b> <span data-ndcg-delta></span></span>
+          </div>
+          <div class="readout">
+            <span class="monitor__label">Mean top-1 score (label-free)</span>
+            <span class="readout__value"><b data-top1>0.523</b></span>
+          </div>
+          <div class="readout">
+            <span class="monitor__label">Re-embed check, 200 sampled docs</span>
+            <span class="readout__value"><b data-reembed>0</b> mismatched</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero__foot">
+      <p class="hero__lead">Silent Failures is a benchmark that breaks RAG retrieval on purpose, then tests which label-free signals notice before users do.</p>
+      <a class="button" href="https://github.com/Srikarmk/Silent-RAG-Failures">Read the code</a>
+    </div>
+  </div>
+</section>
+
+<section class="how" id="how" aria-labelledby="how-title">
+  <div class="field field--1">
+    <h2 id="how-title" class="how__title">One window, four stops</h2>
+    <div class="ticket" data-ui>
+      <div class="ticket__head"><span>Window 7</span><span class="tag">sampled</span></div>
+      <dl>
+        <div><dt>Dataset</dt><dd>NFCorpus test</dd></div>
+        <div><dt>Queries</dt><dd>100 of 323</dd></div>
+        <div><dt>Reference</dt><dd>separate 100</dd></div>
+      </dl>
+    </div>
+    <p class="how__clause">First we sample a window of 100 queries.</p>
+  </div>
+  <div class="field field--2">
+    <div class="ticket" data-ui>
+      <div class="ticket__head"><span>Window 7</span><span class="tag tag--warn">damaged</span></div>
+      <dl>
+        <div><dt>Dataset</dt><dd>NFCorpus test</dd></div>
+        <div><dt>Failure</dt><dd>F1, severity 30%</dd></div>
+        <div><dt>Swapped</dt><dd>1,089 of 3,633 vectors</dd></div>
+      </dl>
+    </div>
+    <p class="how__clause">Then we break the index at a set severity.</p>
+  </div>
+  <div class="field field--3">
+    <div class="ticket" data-ui>
+      <div class="ticket__head"><span>Window 7</span><span class="tag tag--warn">scored</span></div>
+      <dl>
+        <div><dt>Sees</dt><dd>queries, top-10, index</dd></div>
+        <div><dt>Never sees</dt><dd>relevance labels</dd></div>
+        <div><dt>Re-embed</dt><dd>58 / 200 mismatched</dd></div>
+        <div><dt>Top-1 mean</dt><dd>0.505</dd></div>
+      </dl>
+    </div>
+    <p class="how__clause">Detectors score it from logs alone.</p>
+  </div>
+  <div class="field field--4">
+    <div class="ticket" data-ui>
+      <div class="ticket__head"><span>Window 7</span><span class="tag tag--bad">harmful</span></div>
+      <dl>
+        <div><dt>nDCG@10 drop</dt><dd>0.032</dd></div>
+        <div><dt>Paired bootstrap</dt><dd>p = 0.001</dd></div>
+        <div><dt>Harmful</dt><dd>yes</dd></div>
+      </dl>
+    </div>
+    <p class="how__clause">Last, the labels say whether it really hurt.</p>
+  </div>
+</section>
+
+<figure class="plate">
+  <img src="assets/card-division-of-the-library-of-congress.jpg" width="1780" height="1330" loading="lazy" alt="Rows of open card-catalogue trays on long tables in the Library of Congress Card Division, with clerks working at desks behind them">
+  <figcaption>Card Division, Library of Congress, early 1900s. Retrieval by hand, and a misfiled card raised no error either.</figcaption>
+</figure>
+
+<section class="failures" id="failures" aria-labelledby="failures-title">
+  <div class="failures__col">
+    <h2 id="failures-title" class="failures__title">Five ways to break it</h2>
+    <p class="failures__intro">Each failure runs at 10% to 90% of the corpus or query traffic. The harmless changes tell us how often a detector cries wolf.</p>
+    <p class="group">Failures</p>
+    <ul class="rows">
+      <li><span class="dot dot--1"></span><span class="rows__name">F1 Partial embedding upgrade: two models’ vectors in one index</span><span class="rows__value">Oct 31</span></li>
+      <li><span class="dot dot--2"></span><span class="rows__name">F2 Stale documents: outdated content beside its replacement</span><span class="rows__value">Oct 31</span></li>
+      <li><span class="dot dot--3"></span><span class="rows__name">F3 Chunking change on part of the corpus</span><span class="rows__value">Oct 31</span></li>
+      <li><span class="dot dot--4"></span><span class="rows__name">F4 Query shift toward topics the corpus lacks</span><span class="rows__value">Oct 31</span></li>
+      <li><span class="dot dot--5"></span><span class="rows__name">F5 Config mismatch between index and queries</span><span class="rows__value">Oct 31</span></li>
+    </ul>
+    <p class="group">Harmless changes</p>
+    <ul class="rows">
+      <li><span class="dot dot--h"></span><span class="rows__name">Reordering the rows of the index</span><span class="rows__value">candidate</span></li>
+      <li><span class="dot dot--h"></span><span class="rows__name">Mixing 256- and 512-token truncation</span><span class="rows__value">candidate</span></li>
+      <li><span class="dot dot--h"></span><span class="rows__name">Final set chosen with the team in issue #9</span><span class="rows__value">Oct 31</span></li>
+    </ul>
+    <p class="group">Datasets</p>
+    <ul class="rows">
+      <li><span class="dot dot--d"></span><span class="rows__name">NFCorpus, 3,633 medical documents: all tuning</span><span class="rows__value">dev</span></li>
+      <li><span class="dot dot--d"></span><span class="rows__name">SciFact, 5,183 scientific abstracts</span><span class="rows__value">held out</span></li>
+      <li><span class="dot dot--d"></span><span class="rows__name">FiQA, 57,638 financial forum posts</span><span class="rows__value">held out</span></li>
+    </ul>
+  </div>
+  <figure class="failures__pic">
+    <img src="assets/catalogue-bge-2.jpg" width="1024" height="768" loading="lazy" alt="Wooden catalogue drawers with alphabetical labels such as Jain to Jalla and Jallab to James, T.">
+    <figcaption>Catalogue drawers, Bibliothèque de Genève.</figcaption>
+  </figure>
+</section>
+
+<section class="detectors" id="detectors" aria-labelledby="detectors-title">
+  <h2 id="detectors-title" class="visually-hidden">Detectors</h2>
+  <div class="band" data-band data-on>
+    <div class="band__body"><p class="band__text">Re-embed a sample and compare.</p><p class="band__more">Prototype F1 run: AUROC 1.000, every harmful window caught at 10%, 30% and 50%.</p></div>
+    <button class="switch" role="switch" aria-checked="true" aria-label="Re-embedding check" data-ui><span></span></button>
+  </div>
+  <div class="band" data-band data-on>
+    <div class="band__body"><p class="band__text">Classify the retrieved documents.</p><p class="band__more">Prototype F1 run: AUROC 0.907 for the retrieved-docs domain classifier.</p></div>
+    <button class="switch" role="switch" aria-checked="true" aria-label="Retrieved-document classifier" data-ui><span></span></button>
+  </div>
+  <div class="band" data-band>
+    <div class="band__body"><p class="band__text">Classify the incoming queries.</p><p class="band__more">AUROC 0.510 on F1, as it should be: F1 never touches the queries.</p></div>
+    <button class="switch" role="switch" aria-checked="false" aria-label="Query classifier" data-ui><span></span></button>
+  </div>
+  <div class="band" data-band>
+    <div class="band__body"><p class="band__text">Watch the top-1 similarity score.</p><p class="band__more">Mean top-1 falls from 0.523 to 0.431 at 90%. PSI and KS detectors land Nov 11.</p></div>
+    <button class="switch" role="switch" aria-checked="false" aria-label="Top-1 score drift" data-ui><span></span></button>
+  </div>
+  <div class="band" data-band>
+    <div class="band__body"><p class="band__text">Ask an LLM to judge the results.</p><p class="band__more">Planned for Nov 18, with the cost of every check recorded.</p></div>
+    <button class="switch" role="switch" aria-checked="false" aria-label="LLM judge" data-ui><span></span></button>
+  </div>
+</section>
+
+<section class="drop" aria-labelledby="drop-title">
+  <div class="drop__head">
+    <p class="drop__figure" aria-hidden="true">−20%</p>
+    <h2 id="drop-title" class="drop__claim">nDCG@10 lost, zero errors</h2>
+    <p class="drop__note">NFCorpus, all 323 test queries, as more of the index is re-embedded with all-MiniLM-L6-v2 while queries stay on multi-qa-MiniLM. At 10% the drop on a 100-query window is only 0.013, and the paired bootstrap already calls it significant (p = 0.025).</p>
+  </div>
+  <div class="bars" data-ui data-bars role="img" aria-label="nDCG@10 by severity, from 0.292 at 0% to 0.234 at 90%"></div>
+</section>
+
+<section class="try" aria-labelledby="try-title">
+  <h2 id="try-title" class="visually-hidden">Try a query</h2>
+  <label class="visually-hidden" for="q">Type an NFCorpus test query</label>
+  <div class="try__line" data-ui>
+    <input id="q" class="try__input" type="text" value="domoic acid" autocomplete="off" spellcheck="false" data-q>
+  </div>
+  <div class="try__body">
+    <div>
+      <div class="try__answer" data-ui data-answer aria-live="polite"></div>
+      <div class="try__examples" data-examples></div>
+    </div>
+    <figure class="try__pic">
+      <img src="assets/library-of-congress-serials-card-catalog-in.jpg" width="1920" height="1281" loading="lazy" alt="Close-up of a typed catalogue card for the Congressional Record standing in an open drawer">
+      <figcaption>One record, pulled from the Serials Card Catalog, Library of Congress.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="letter" id="status" aria-labelledby="status-title">
+  <div class="letter__col">
+    <figure class="letter__pic">
+      <img src="assets/boston-public-library-mckim-building-reading-room.jpg" width="1920" height="1440" loading="lazy" alt="Long reading tables lit by green lamps under arched windows in the Boston Public Library reading room">
+      <figcaption>Reading room, McKim Building, Boston Public Library.</figcaption>
+    </figure>
+    <h2 id="status-title" class="letter__title">Where we are</h2>
+    <p>We are four DS5500 students at Northeastern, and we started with one question: when retrieval in a RAG system quietly gets worse, which of the cheap, label-free signals teams already watch would actually tell you?</p>
+    <p>The pipeline, the runner and the baseline are done. With <code>multi-qa-MiniLM-L6-cos-v1</code>, title and text cut at 256 tokens, clean nDCG@10 is 0.292 on NFCorpus, 0.546 on SciFact and 0.360 on FiQA. A window of 100 queries is enough for the bootstrap to catch a drop of about 0.06 in 80% of windows.</p>
+    <p>The numbers on this page come from a prototype of F1. <mark>The real injectors and detectors land over the next four weeks</mark>: all five failures by Oct 31, drift and score-based detectors by Nov 11, canaries, re-embedding and the LLM judge by Nov 18.</p>
+    <p>On Nov 24 we run everything once on SciFact and FiQA, which nothing has been tuned on, and the detector-by-failure heatmap goes here. The benchmark, a monitoring guide and the report ship on Dec 1.</p>
+    <p class="letter__sign">Srikar Manda, Alekhya Bulusu, Shane Hussey and Ying-Jen Chiang</p>
+    <p class="letter__role">DS5500 Capstone, Fall 2026</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="tiles">
+  <div class="tile tile--statement">
+    <p>A benchmark for noticing retrieval damage before your users do.</p>
+    <p class="tile__legal">Data: BEIR (NFCorpus, SciFact, FiQA). Models: sentence-transformers.</p>
+  </div>
+  <nav class="tile tile--nav" aria-label="Footer">
+    <a href="#how">How it works</a>
+    <a href="#failures">Failures</a>
+    <a href="#detectors">Detectors</a>
+    <a href="#status">Status</a>
+  </nav>
+  <div class="tile tile--time">
+    <p>Boston</p>
+    <p class="tile__big" data-clock>Eastern time</p>
+  </div>
+  <div class="tile tile--mail">
+    <p>Questions or ideas</p>
+    <a class="tile__big" href="https://github.com/Srikarmk/Silent-RAG-Failures/issues">Open an issue</a>
+  </div>
+  <div class="tile tile--word"><p>Silent Failures</p></div>
+  <a class="tile tile--go" href="https://github.com/Srikarmk/Silent-RAG-Failures">
+    <span>Read the code</span>
+    <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true"><path d="M10 38 38 10M16 10h22v22" fill="none" stroke="currentColor" stroke-width="4"/></svg>
+  </a>
+  <p class="credits">Pictures, all public domain via Wikimedia Commons: <a href="https://commons.wikimedia.org/wiki/File:Card_Division_of_the_Library_of_Congress_3c18631u_original.jpg">“Card Division of the Library of Congress”</a>; <a href="https://commons.wikimedia.org/wiki/File:Catalogue_BGE_2.JPG">“Catalogue BGE 2”</a> by Mourad Ben Abdallah; <a href="https://commons.wikimedia.org/wiki/File:Library_of_Congress_Serials_Card_Catalog_in_the_John_Adams_Building_on_23_January_2025.jpg">“Library of Congress Serials Card Catalog”</a> by Shawn Miller, Library of Congress (CC0); <a href="https://commons.wikimedia.org/wiki/File:Boston_Public_Library_McKim_Building_Reading_Room.jpg">“Boston Public Library McKim Building Reading Room”</a> by Ncysea.</p>
+</footer>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
