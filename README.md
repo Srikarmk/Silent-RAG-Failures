@@ -4,7 +4,7 @@
 
 **Detecting retrieval degradation in RAG systems without relevance labels**
 
-![Status](https://img.shields.io/badge/status-proposal-f59e0b?style=flat-square)
+![Status](https://img.shields.io/badge/status-in%20progress-3b82f6?style=flat-square)
 ![Course](https://img.shields.io/badge/DS5500-Fall%202026-4f46e5?style=flat-square)
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?style=flat-square&logo=python&logoColor=white)
 ![Data](https://img.shields.io/badge/data-BEIR-10b981?style=flat-square)
@@ -99,7 +99,7 @@ SciFact and FiQA are never used for tuning, so the final numbers show how well t
 
 ## Early results
 
-Our first pass over SciFact is in [`notebooks/scifact_eda.ipynb`](notebooks/scifact_eda.ipynb). It uses `multi-qa-MiniLM-L6-cos-v1` as a placeholder model.
+Our first pass over SciFact is in [`notebooks/scifact_eda.ipynb`](notebooks/scifact_eda.ipynb), using `multi-qa-MiniLM-L6-cos-v1`.
 
 | | Queries | Documents |
 |---|---:|---:|
@@ -108,9 +108,19 @@ Our first pass over SciFact is in [`notebooks/scifact_eda.ipynb`](notebooks/scif
 | Longer than 512 tokens (the model's hard limit) | 0 | 455 (8.8%) |
 | Longer than ~250 tokens (what the model was trained on) | 0 | 3,793 (73.2%) |
 
-Query length is not a concern. Document length is: most abstracts are longer than the inputs this model was trained on. This will shape how we choose the final model and chunking strategy.
+Query length is not a concern. Document length is: most abstracts are longer than the inputs this model was trained on.
 
-As a sanity check on the pipeline, exact cosine search in FAISS over the 300 labeled test queries gives **nDCG@10 = 0.540** (95% bootstrap CI: 0.491–0.588). This isn't our baseline yet, since the model and document handling haven't been fixed.
+**Baseline.** We kept `multi-qa-MiniLM-L6-cos-v1` and embed title + text truncated at 256 tokens, with no chunking ([#5](https://github.com/Srikarmk/Silent-RAG-Failures/issues/5)). The goal is to evaluate detectors, not to get the best retriever. Clean nDCG@10 with exact cosine search in FAISS:
+
+| Dataset | Test queries | nDCG@10 | 95% bootstrap CI |
+|---|---:|---:|---|
+| NFCorpus | 323 | 0.292 | 0.259–0.325 |
+| SciFact | 300 | 0.546 | 0.496–0.595 |
+| FiQA | 648 | 0.360 | 0.332–0.387 |
+
+Truncating at 256 instead of 512 tokens made no significant difference on any of the three.
+
+**Window size.** Each check scores a window of **100 queries** ([#4](https://github.com/Srikarmk/Silent-RAG-Failures/issues/4)). On NFCorpus, that's enough for the paired bootstrap to catch an nDCG@10 drop of about 0.06 in 80% of windows while staying under a 5% false-alarm rate. Windows of 25 or 50 queries only reliably catch drops of 0.10–0.13, and alarm more often than 5%. Both analyses are in [`experiments/baseline/window_size.py`](experiments/baseline/window_size.py).
 
 ## Timeline
 
@@ -118,29 +128,128 @@ We wrap up on **December 1**. Each milestone below has its issues on the [projec
 
 | Due | Milestone | Done when | Status |
 |---|---|---|---|
-| Oct 18 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | In progress |
+| Oct 18 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | Done (#8 pending) |
 | Oct 31 | [Failure injection](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/2) | F1–F5 plus negative controls; nDCG@10 drops steadily with severity, negative controls don't | |
 | Nov 11 | [Drift + QPP detectors](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/3) | Implemented and tuned on NFCorpus | |
 | Nov 18 | [Canary, re-embed, LLM judge](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/4) | Implemented, with cost per check recorded for every detector | |
 | Nov 24 | [Held-out evaluation](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/5) | AUROC, earliness and false alarms on SciFact and FiQA; heatmap; PSI analysis | |
 | Dec 1 | [Release](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/6) | Benchmark, monitoring guide, final report (agentic extension only if there's time) | |
 
+## Running it
+
+**Setup** (Python 3.10 to 3.14; 3.15 has no scikit-learn wheels yet, so the install fails there)
+
+```bash
+git clone https://github.com/Srikarmk/Silent-RAG-Failures.git
+cd Silent-RAG-Failures
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+```
+
+On Windows (PowerShell), activate with `.venv\Scripts\Activate.ps1` instead of `source .venv/bin/activate`. If PowerShell refuses to run the script, allow it for the current session first with `Set-ExecutionPolicy -Scope Process RemoteSigned`.
+
+On a Mac, if anything that uses both faiss and torch exits with no error, prefix commands with `KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1`.
+
+**Run**
+
+```bash
+python -m silent_rag.run --list                                # registered failures and detectors
+python -m silent_rag.run --config configs/dev.yaml             # development run, NFCorpus only
+python -m silent_rag.run --config configs/final.yaml --final   # held-out run, SciFact + FiQA
+```
+
+Both configs name `F1_partial_upgrade` and `ks_top1`, which don't exist yet (#8). Until they land the runner stops with `no injector registered for ...`; `--list` shows what is available.
+
+Datasets (`nfcorpus`, `scifact`, `fiqa`) download from the Hugging Face Hub at pinned revisions. Corpus embeddings are cached under `cache/embeddings/` (or `$SILENT_RAG_CACHE/embeddings/`), keyed on the model, its revision, the settings that change the vectors and the corpus text itself, so only the first run of a setup embeds the corpus. The runner refuses SciFact and FiQA unless `--final` is passed.
+
+**Output.** One parquet file, `results/<config name>.parquet` (or `--out`), with one row per dataset × failure × severity × trial × detector:
+
+| Column | Meaning |
+|---|---|
+| `run_id` | hash of the config, so rows from different setups never mix |
+| `dataset`, `model`, `model_revision` | what was run |
+| `failure`, `severity`, `expected_harmful` | the condition; `clean` has severity 0, negative controls have `expected_harmful = False` |
+| `seed`, `trial`, `window_size` | which query window was scored |
+| `detector`, `score` | the detector's output, higher = more likely broken |
+| `ndcg_drop`, `p_value`, `harmful` | ground truth: mean nDCG@k drop on the window, the one-sided paired bootstrap p-value, and `harmful = p_value < alpha and ndcg_drop >= min_drop` |
+| `cost_s`, `cost_usd` | time per check, and API cost for the LLM judge |
+
+**Config**
+
+```yaml
+datasets: [nfcorpus]
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever: {revision: <hub commit>}        # any Retriever argument: normalize, query_prefix, max_seq_length...
+failures:
+  F1_partial_upgrade: [0.1, 0.5, 0.9]      # registry name: severities (fraction affected, in (0, 1])
+detectors: [ks_top1, re_embed]
+window_size: 100
+trials: 20
+seed: 0
+# optional, with defaults: k: 10, alpha: 0.05, min_drop: 0.0
+# seeds: [0, 1, 2] instead of seed repeats the whole run (windows, reference window, damage) under one run_id
+```
+
+Detectors that take parameters are listed as `{name: {param: value}}`, e.g. `- re_embed: {sample: 50, metric: l2}`. `re_embed` treats per-doc distances below a noise floor as 0 (`floor`, default 1e-5 for cosine and 5e-3 for l2), so a clean index scores exactly 0 and thresholds should be above 0. One setting per detector per run; use two runs to compare settings.
+
+**Adding a failure.** Put a module in `src/silent_rag/inject/`, subclass `Injector` and register it. The `name` is what the config and the results table use.
+
+```python
+import dataclasses
+from silent_rag.inject.base import Injector, register
+
+@register
+class MyFailure(Injector):
+    name = "F9_my_failure"
+    harmful = True  # False for a negative control
+
+    def apply(self, state, severity, seed):
+        emb = state.doc_embeddings.copy()   # never modify state in place
+        ...                                 # damage a `severity` fraction, deterministically from `seed`
+        return dataclasses.replace(state, doc_embeddings=emb)
+```
+
+Keep query positions fixed. If the failure changes `query_texts`, set `query_embeddings=None` so the runner re-embeds them with the clean model; if it changes how queries are encoded, edit `query_embeddings` yourself (`state.config` is descriptive, nothing reads it to re-encode). The index and query arrays are read-only during a run, so copy before changing them. With chunking, set `parent_ids` and keep `doc_ids`, `doc_texts` and `doc_embeddings` row-aligned.
+
+The runner makes one injector per failure and calls `attach(retriever)` on it once, then reuses it for every severity and trial. Put expensive setup there (a second model's embeddings for the whole corpus, a re-chunked corpus) and pick rows per trial in `apply`, rather than re-embedding inside every trial.
+
+**Adding a detector.** Same pattern in `src/silent_rag/detect/`:
+
+```python
+from silent_rag.detect.base import Detector, register
+
+@register
+class MyDetector(Detector):
+    name = "my_detector"
+
+    def fit(self, reference):   # Observation from the clean system
+        self.ref = reference.topk_scores[:, 0].mean()
+
+    def score(self, window):    # Observation that may be damaged; higher = more likely broken
+        return float(self.ref - window.topk_scores[:, 0].mean())
+```
+
+An `Observation` holds what a production system could log (query ids, texts and embeddings, top-k ids and scores, the index rows with their ids and texts) and deliberately no qrels. Treat it as read-only. A detector that needs to re-embed overrides `attach(retriever)`, which gets the clean retriever once before `fit()`. New modules in `inject/` and `detect/` are picked up automatically.
+
 ## Repository
 
 ```text
 src/silent_rag/
   types.py            Dataset, RetrievalState, Observation (no labels)
-  pipeline.py         embed, index, search
+  data.py             BEIR loaders, pinned revisions
+  pipeline.py         embed, cache, index, search
   inject/             failure injectors (F1-F5, H1-H3)
   detect/             label-free detectors
-  eval/               ground truth (nDCG drop, bootstrap) and the results table
+  eval/               ground truth (nDCG drop, bootstrap), window-size analysis, results table
   run.py              experiment runner
-configs/              experiment configs
+configs/              dev.yaml (NFCorpus), final.yaml (held-out)
+experiments/          one-off analyses (baseline CIs, window size, truncation)
 notebooks/            exploration only
 tests/
 ```
 
-Most of `src/` is still stubs. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and how we're working.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how we're working.
 
 **Stack:** sentence-transformers, FAISS, scikit-learn, SciPy, DuckDB, matplotlib
 

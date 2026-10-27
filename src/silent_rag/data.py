@@ -25,7 +25,7 @@ SOURCES = {
         "repo": "BeIR/fiqa",
         "revision": "979c07a7cb5ccc6ca009792241fa1250b98055dd",
         "qrels": "BeIR/fiqa-qrels",
-        "qrels_revision": None,
+        "qrels_revision": "252958f2d646e22cab6d0c72dd3f0d5de6d0655a",
     },
 }
 
@@ -54,3 +54,12 @@ def load(name: str, split: str = "test") -> Dataset:
         queries={q: query_text[q] for q in qrels},
         qrels=qrels,
     )
+
+
+def load_beir(name: str) -> Dataset:
+    """Load a BEIR dataset using test-split relevance judgments.
+
+    The runner keeps using ``load`` for compatibility. This explicit entry point
+    makes the intended evaluation split clear to other callers.
+    """
+    return load(name, split="test")
