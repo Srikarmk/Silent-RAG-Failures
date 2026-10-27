@@ -67,13 +67,15 @@ def _auc_pool(df: pd.DataFrame, detector: str, failure: str,
     if not target["expected_harmful"].all():
         raise ValueError("Target failure must be an expected harmful condition")
 
-    # Harmful negative controls are failed controls, not positives for F1/F2/etc.
-    # Non-harmful target windows remain negatives, rather than being discarded.
-    pool = selected.loc[
-        selected["failure"].eq(failure)
-        | selected["failure"].eq("clean")
-        | ((~selected["expected_harmful"]) & (~selected["harmful"]))
-    ]
+    # Positives: harmful windows of the target failure. Negatives: clean windows
+    # and controls that turned out harmless. Damaged-but-not-significant target
+    # windows are dropped, so AUROC doesn't depend on the bootstrap knife-edge,
+    # and harmful controls are failed controls, not positives for F1/F2/etc.
+    is_target = selected["failure"].eq(failure)
+    is_clean = selected["failure"].eq("clean")
+    harmless_control = ~selected["expected_harmful"] & ~is_clean & ~selected["harmful"]
+    pool = selected.loc[(is_target & selected["harmful"]) | is_clean | harmless_control].copy()
+    pool["harmful"] = pool["failure"].eq(failure)
     _valid_scores(pool)
     if pool["harmful"].nunique() != 2:
         raise ValueError("AUROC requires both harmful and non-harmful windows")
@@ -82,7 +84,7 @@ def _auc_pool(df: pd.DataFrame, detector: str, failure: str,
 
 def compute_auroc(df: pd.DataFrame, detector: str, failure: str,
                   allow_multiple_runs: bool = False) -> float:
-    """AUROC for a specific failure against clean and genuinely harmless windows."""
+    """AUROC of harmful windows of a failure against clean and harmless control windows."""
     pool = _auc_pool(df, detector, failure, allow_multiple_runs)
     return float(roc_auc_score(pool["harmful"], pool["score"]))
 
@@ -214,10 +216,15 @@ def earliest_detectable_severity(
     min_harmful_windows: int = 5,
     allow_multiple_runs: bool = False,
 ) -> float | None:
-    """Earliest severity with >= min_detection_rate true alarms across ALL trials.
+    """Earliest severity from which the detector catches harmful windows and keeps doing so.
 
-    True detection rate = count(harmful AND alarm) / count(all windows).
+    A severity qualifies when it has >= min_harmful_windows harmful windows and
+    tpr_when_harmful >= min_detection_rate. The answer is the lowest qualifying
+    severity that every higher severity with enough harmful windows also meets.
     An alarm on a non-harmful window is NOT a successful early detection.
+
+    Uses tpr_when_harmful, not true_detection_rate: the latter can't exceed
+    harmful_fraction, so it would describe the failure rather than the detector.
     """
     if not np.isfinite(min_detection_rate) or not 0 < min_detection_rate <= 1:
         raise ValueError("min_detection_rate must be in (0, 1]")
@@ -225,8 +232,8 @@ def earliest_detectable_severity(
             or isinstance(min_harmful_windows, bool) or min_harmful_windows < 1):
         raise ValueError("min_harmful_windows must be a positive integer")
     table = severity_detection_table(df, detector, failure, threshold, allow_multiple_runs)
-    enough = table.loc[
-        (table["n_harmful"] >= min_harmful_windows)
-        & (table["true_detection_rate"] >= min_detection_rate)
-    ]
-    return float(enough.iloc[0]["severity"]) if not enough.empty else None
+    table = table.loc[table["n_harmful"] >= min_harmful_windows]
+    caught = table["tpr_when_harmful"].ge(min_detection_rate).to_numpy()
+    # stays caught: caught here and at every higher severity
+    stays = np.logical_and.accumulate(caught[::-1])[::-1]
+    return float(table["severity"].iloc[stays.argmax()]) if stays.any() else None

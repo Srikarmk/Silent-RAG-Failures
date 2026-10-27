@@ -44,10 +44,19 @@ def obs(failure, score, harmful, severity=0.5, **extra):
             **extra}
 
 
-def test_auroc_uses_actual_harmful_labels():
+def test_auroc_drops_nonharmful_target_windows():
+    # the F1 window whose drop wasn't significant is neither positive nor negative
     df = make_df(obs("clean", .1, False), obs("H1", .9, False),
-                 obs("F1", .2, False), obs("F1", .8, True))
-    assert compute_auroc(df, "ks_top1", "F1") == pytest.approx(2 / 3)
+                 obs("F1", .95, False), obs("F1", .8, True))
+    assert compute_auroc(df, "ks_top1", "F1") == pytest.approx(1 / 2)
+    perfect = make_df(obs("clean", .1, False), obs("F1", .05, False), obs("F1", .8, True))
+    assert compute_auroc(perfect, "ks_top1", "F1") == 1.0
+
+
+def test_auroc_counts_clean_windows_as_negatives_even_if_labelled_harmful():
+    # clean windows are undamaged; a significant drop there is a ground-truth false positive
+    df = make_df(obs("clean", .1, True), obs("clean", .2, False), obs("F1", .8, True))
+    assert compute_auroc(df, "ks_top1", "F1") == 1.0
 
 
 def test_auroc_excludes_failed_controls_from_f1_positives():
@@ -220,14 +229,30 @@ def test_earliness_does_not_count_nonharmful_alarms():
     assert summary.loc[summary.severity.eq(.5), "true_detection_rate"].iloc[0] == .8
 
 
-def test_earliness_uses_all_windows_not_only_harmful_subset():
+def test_earliness_is_not_capped_by_harmful_fraction():
+    # only a quarter of windows are harmful, but the detector catches all of them
     df = make_df(*([obs("F1", .9, True, severity=.1)] * 5
                    + [obs("F1", .9, False, severity=.1)] * 15))
     summary = severity_detection_table(df, "ks_top1", "F1", .5)
     assert summary.iloc[0]["tpr_when_harmful"] == 1.0
     assert summary.iloc[0]["harmful_fraction"] == .25
     assert summary.iloc[0]["true_detection_rate"] == .25
-    assert earliest_detectable_severity(df, "ks_top1", "F1", .5) is None
+    assert earliest_detectable_severity(df, "ks_top1", "F1", .5) == pytest.approx(.1)
+
+
+def test_earliness_must_hold_at_every_higher_severity():
+    df = make_df(*([obs("F1", .9, True, severity=.1)] * 5
+                   + [obs("F1", .1, True, severity=.3)] * 5
+                   + [obs("F1", .9, True, severity=.5)] * 5))
+    assert earliest_detectable_severity(df, "ks_top1", "F1", .5) == pytest.approx(.5)
+
+
+def test_earliness_skips_severities_without_enough_harmful_windows():
+    df = make_df(*([obs("F1", .9, True, severity=.1)] * 5
+                   + [obs("F1", .1, True, severity=.3)] * 2
+                   + [obs("F1", .1, False, severity=.3)] * 3
+                   + [obs("F1", .9, True, severity=.5)] * 5))
+    assert earliest_detectable_severity(df, "ks_top1", "F1", .5) == pytest.approx(.1)
 
 
 def test_earliness_handles_unordered_severities():
