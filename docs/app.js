@@ -94,6 +94,7 @@
   }
   function answerFor() {
     const hit = find(input.value);
+    drawSpread(hit);
     if (!hit) {
       answer.innerHTML = `<p class="try__match">No NFCorpus test query matches that. Try a health topic, like “vitamin d” or “sugar”.</p>`;
       return;
@@ -101,27 +102,70 @@
     answer.innerHTML = `<p class="try__match">Top 3 for the NFCorpus test query “${esc(hit.q)}”</p>`
       + pane('Clean index', hit.clean) + pane('Half the index upgraded', hit.mixed);
   }
+
+  /* every query's change at 50%, sorted; the typed query is highlighted */
+  const spread = $('[data-spread]');
+  const deltas = D.all.map((x) => ({ x, d: x.mixed.ndcg - x.clean.ndcg })).sort((a, b) => a.d - b.d);
+  const worse = deltas.filter((e) => e.d < -1e-9).length, better = deltas.filter((e) => e.d > 1e-9).length;
+  $('[data-counts]').innerHTML = `<b>${worse}</b> worse · <b>${deltas.length - worse - better}</b> unchanged · <b>${better}</b> better`;
+  function drawSpread(hit) {
+    const ctx = spread.getContext('2d'), W = spread.width, H = spread.height, mid = H / 2;
+    const bw = W / deltas.length;
+    const top = Math.max(...deltas.map((e) => Math.abs(e.d)));
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#2a3550'; ctx.fillRect(0, mid, W, 1);
+    deltas.forEach((e, i) => {
+      const h = e.d / top * (H / 2 - 8);
+      ctx.fillStyle = e.x === hit ? '#e9edf3' : e.d < 0 ? '#5a9bfc' : e.d > 0 ? '#4fc28a' : '#2a3550';
+      const w = e.x === hit ? Math.max(bw, 4) : Math.max(bw - 0.6, 1);
+      ctx.fillRect(i * bw, h < 0 ? mid : mid - h, w, Math.max(Math.abs(h), e.x === hit ? 6 : 1));
+    });
+  }
   input.addEventListener('input', answerFor);
   const picks = D.all.filter((x) => x.clean.ndcg - x.mixed.ndcg > 0.3 && x.q.length < 22).slice(0, 3).map((x) => x.q);
   $('[data-examples]').innerHTML = '<span>Or try</span>' + picks.map((q) => `<button type="button">${esc(q)}</button>`).join('');
   $$('[data-examples] button').forEach((b) => b.addEventListener('click', () => { input.value = b.textContent; answerFor(); }));
   answerFor();
 
-  /* Boston clock */
-  const clock = $('[data-clock]');
-  const tick = () => { clock.textContent = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(new Date()); };
-  tick(); setInterval(tick, 30000);
+  /* index map: lines draw out from each doc's clean position when the map comes into view */
+  const map = $('[data-map]');
+  $('[data-map-cos]').textContent = D.map.cos.toFixed(2);
+  function drawMap(t) {
+    const ctx = map.getContext('2d'), W = map.width, H = map.height, pad = 28;
+    const X = (v) => pad + v * (W - 2 * pad), Y = (v) => H - pad - v * (H - 2 * pad);
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#3b4a6e';
+    D.map.docs.forEach(([x, y]) => ctx.fillRect(X(x) - 1, Y(y) - 1, 2.2, 2.2));
+    ctx.strokeStyle = 'rgba(90,155,252,.7)'; ctx.lineWidth = 1.1; ctx.fillStyle = '#5a9bfc';
+    D.map.from.forEach(([x0, y0], i) => {
+      const [x1, y1] = D.map.to[i];
+      const x = X(x0 + (x1 - x0) * t), y = Y(y0 + (y1 - y0) * t);
+      ctx.beginPath(); ctx.moveTo(X(x0), Y(y0)); ctx.lineTo(x, y); ctx.stroke();
+      ctx.fillRect(x - 2, y - 2, 4, 4);
+    });
+  }
+  drawMap(reduced || !('IntersectionObserver' in window) ? 1 : 0);
+  if (!reduced && 'IntersectionObserver' in window) {
+    const mo = new IntersectionObserver(([e]) => {
+      if (!e.isIntersecting) return;
+      mo.disconnect();
+      const t0 = performance.now();
+      const step = (now) => { const t = Math.min(1, (now - t0) / 1600); drawMap(1 - Math.pow(1 - t, 3)); if (t < 1) requestAnimationFrame(step); };
+      requestAnimationFrame(step);
+    }, { threshold: 0.3 });
+    mo.observe(map);
+  }
 
   /* entrances: heading, then text, then fragment */
   const groups = [
     ['.how .field', ['.how__title', '.ticket', '.how__clause']],
     ['.failures__col', ['.failures__title', '.failures__intro', '.rows']],
     ['.detectors .band', ['.band__text', '.switch']],
-    ['.plate', ['img', 'figcaption']],
-    ['.failures', ['.failures__pic']],
+    ['.map', ['.map__title', '.map__text p', '.map__fig']],
+    ['.failures', ['.failures__side']],
     ['.drop', ['.drop__figure', '.drop__claim', '.drop__note', '.bar-col']],
-    ['.try', ['.try__line', '.try__answer', '.try__examples', '.try__pic']],
-    ['.letter__col', [':scope > *']],
+    ['.try', ['.try__line', '.try__answer', '.try__examples', '.spread']],
+    ['.status', ['.status__title', '.status__text p', '.baseline', '.milestones li']],
   ];
   if (reduced || !('IntersectionObserver' in window)) return;
   const io = new IntersectionObserver((entries) => entries.forEach((e) => {
