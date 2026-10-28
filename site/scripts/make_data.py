@@ -1,6 +1,8 @@
-# Builds docs/data.js for the project page: a real NFCorpus run with a prototype F1
+# Builds the project page's data from a real NFCorpus run with a prototype F1
 # (part of the index re-embedded with all-MiniLM-L6-v2, queries left on the baseline model).
-# Usage: python docs/make_data.py docs/data.js
+# Usage, from the repo root: python site/scripts/make_data.py
+# Writes site/data/summary.json (bundled into the page) and site/public/data/{map,queries}.json
+# (fetched by the browser).
 import dataclasses, json, sys
 import numpy as np
 from datasets import load_dataset
@@ -78,4 +80,11 @@ norm = lambda v: np.round((v - lo) / (hi - lo), 3).tolist()
 moved = np.random.default_rng(3).choice(len(X), 260, replace=False)
 out["map"] = {"docs": norm(a), "from": norm(a[moved]), "to": norm(b[moved]),
               "cos": round(float((X * alt).sum(1).mean()), 2)}
-open(sys.argv[1], "w").write("window.SRF = " + json.dumps(out, separators=(",", ":")) + ";\n")
+def dump(obj, path):
+    with open(path, "w") as f:
+        json.dump(obj, f, separators=(",", ":"))
+
+dump({k: out[k] for k in ("n_docs", "n_queries", "levels", "examples")} | {"map_cos": out["map"]["cos"]},
+     "site/data/summary.json")
+dump(out["map"], "site/public/data/map.json")
+dump(out["all"], "site/public/data/queries.json")

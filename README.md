@@ -246,6 +246,7 @@ src/silent_rag/
 configs/              dev.yaml (NFCorpus), final.yaml (held-out)
 experiments/          one-off analyses (baseline CIs, window size, truncation)
 notebooks/            exploration only
+site/                 project page (Next.js static export), deployed to GitHub Pages on push to main
 tests/
 ```
 
