@@ -134,15 +134,21 @@
   </div>
 </section>
 
-<figure class="plate">
-  <img src="assets/card-division-of-the-library-of-congress.jpg" width="1780" height="1330" loading="lazy" alt="Rows of open card-catalogue trays on long tables in the Library of Congress Card Division, with clerks working at desks behind them">
-  <figcaption>Card Division, Library of Congress, early 1900s. Retrieval by hand, and a misfiled card raised no error either.</figcaption>
-</figure>
+<section class="map" aria-labelledby="map-title">
+  <div class="map__text">
+    <h2 id="map-title" class="map__title">Same text, new vectors</h2>
+    <p>Each line is one NFCorpus document. It starts where the index model put it and ends where all-MiniLM-L6-v2 puts the same text. Both models are 384-dimensional, so nothing complains when the vectors are mixed, but a document's two vectors share a cosine of only <b data-map-cos>0.61</b> on average.</p>
+    <p class="map__note">All 3,633 documents, projected onto the clean index’s first two principal components. Lines show 260 of them.</p>
+  </div>
+  <div class="map__fig" data-ui>
+    <canvas data-map width="1200" height="640" role="img" aria-label="Scatter of 3,633 document vectors with 260 lines showing how far each document moves when re-embedded by a second model"></canvas>
+  </div>
+</section>
 
 <section class="failures" id="failures" aria-labelledby="failures-title">
   <div class="failures__col">
     <h2 id="failures-title" class="failures__title">Five ways to break it</h2>
-    <p class="failures__intro">Each failure runs at 10% to 90% of the corpus or query traffic. The harmless changes tell us how often a detector cries wolf.</p>
+    <p class="failures__intro">Each failure runs at 10% to 90% of the corpus or query traffic. The harmless changes measure how often a detector raises a false alarm.</p>
     <p class="group">Failures</p>
     <ul class="rows">
       <li><span class="dot dot--1"></span><span class="rows__name">F1 Partial embedding upgrade: two models’ vectors in one index</span><span class="rows__value">Oct 31</span></li>
@@ -164,10 +170,12 @@
       <li><span class="dot dot--d"></span><span class="rows__name">FiQA, 57,638 financial forum posts</span><span class="rows__value">held out</span></li>
     </ul>
   </div>
-  <figure class="failures__pic">
-    <img src="assets/catalogue-bge-2.jpg" width="1024" height="768" loading="lazy" alt="Wooden catalogue drawers with alphabetical labels such as Jain to Jalla and Jallab to James, T.">
-    <figcaption>Catalogue drawers, Bibliothèque de Genève.</figcaption>
-  </figure>
+  <div class="failures__side">
+    <p class="side__title">What the severity means</p>
+    <p>At 30%, 1,089 of the 3,633 document vectors come from the other model. Queries, the index size and the error count stay exactly the same, which is the whole problem.</p>
+    <p class="side__title">How harm is decided</p>
+    <p>A window counts as harmful when its nDCG@10 drop from the clean index is significant under a one-sided paired bootstrap at α = 0.05. Detectors never see this label; it only grades them.</p>
+  </div>
 </section>
 
 <section class="detectors" id="detectors" aria-labelledby="detectors-title">
@@ -214,27 +222,40 @@
       <div class="try__answer" data-ui data-answer aria-live="polite"></div>
       <div class="try__examples" data-examples></div>
     </div>
-    <figure class="try__pic">
-      <img src="assets/library-of-congress-serials-card-catalog-in.jpg" width="1920" height="1281" loading="lazy" alt="Close-up of a typed catalogue card for the Congressional Record standing in an open drawer">
-      <figcaption>One record, pulled from the Serials Card Catalog, Library of Congress.</figcaption>
-    </figure>
+    <div class="spread" data-ui>
+      <div class="spread__head">
+        <p class="spread__title">Every test query, half the index upgraded</p>
+        <p class="spread__counts" data-counts></p>
+      </div>
+      <canvas data-spread width="900" height="360" role="img" aria-label="Change in nDCG@10 for each of the 323 NFCorpus test queries when half the index is upgraded, sorted from largest drop to largest gain"></canvas>
+      <p class="spread__note">Each bar is one query’s change in nDCG@10, sorted. The highlighted bar is the query above.</p>
+    </div>
   </div>
 </section>
 
-<section class="letter" id="status" aria-labelledby="status-title">
-  <div class="letter__col">
-    <figure class="letter__pic">
-      <img src="assets/boston-public-library-mckim-building-reading-room.jpg" width="1920" height="1440" loading="lazy" alt="Long reading tables lit by green lamps under arched windows in the Boston Public Library reading room">
-      <figcaption>Reading room, McKim Building, Boston Public Library.</figcaption>
-    </figure>
-    <h2 id="status-title" class="letter__title">Where we are</h2>
-    <p>We are four DS5500 students at Northeastern, and we started with one question: when retrieval in a RAG system quietly gets worse, which of the cheap, label-free signals teams already watch would actually tell you?</p>
-    <p>The pipeline, the runner and the baseline are done. With <code>multi-qa-MiniLM-L6-cos-v1</code>, title and text cut at 256 tokens, clean nDCG@10 is 0.292 on NFCorpus, 0.546 on SciFact and 0.360 on FiQA. A window of 100 queries is enough for the bootstrap to catch a drop of about 0.06 in 80% of windows.</p>
-    <p>The numbers on this page come from a prototype of F1. <mark>The real injectors and detectors land over the next four weeks</mark>: all five failures by Oct 31, drift and score-based detectors by Nov 11, canaries, re-embedding and the LLM judge by Nov 18.</p>
-    <p>On Nov 24 we run everything once on SciFact and FiQA, which nothing has been tuned on, and the detector-by-failure heatmap goes here. The benchmark, a monitoring guide and the report ship on Dec 1.</p>
-    <p class="letter__sign">Srikar Manda, Alekhya Bulusu, Shane Hussey and Ying-Jen Chiang</p>
-    <p class="letter__role">DS5500 Capstone, Fall 2026</p>
+<section class="status" id="status" aria-labelledby="status-title">
+  <div class="status__text">
+    <h2 id="status-title" class="status__title">Where the project stands</h2>
+    <p>The pipeline, the experiment runner and the baseline are done. With <code>multi-qa-MiniLM-L6-cos-v1</code>, title and text cut at 256 tokens, a window of 100 queries lets the paired bootstrap catch an nDCG@10 drop of about 0.06 in 80% of windows.</p>
+    <p>Numbers on this page come from a prototype of F1. The real injectors and detectors land over the next four weeks, then everything runs once on SciFact and FiQA, which nothing is tuned on. The detector-by-failure heatmap will replace this section.</p>
+    <table class="baseline">
+      <caption>Clean nDCG@10 with 95% bootstrap CI</caption>
+      <thead><tr><th scope="col">Dataset</th><th scope="col">Queries</th><th scope="col">nDCG@10</th><th scope="col">95% CI</th></tr></thead>
+      <tbody>
+        <tr><td>NFCorpus</td><td>323</td><td>0.292</td><td>0.259–0.325</td></tr>
+        <tr><td>SciFact</td><td>300</td><td>0.546</td><td>0.496–0.595</td></tr>
+        <tr><td>FiQA</td><td>648</td><td>0.360</td><td>0.332–0.387</td></tr>
+      </tbody>
+    </table>
   </div>
+  <ol class="milestones">
+    <li class="is-done"><span class="m__date">Oct 18</span><span class="m__name">Baseline: model, truncation, clean CIs</span><span class="m__state">Done</span></li>
+    <li class="is-now"><span class="m__date">Oct 31</span><span class="m__name">Failure injection: F1–F5 and negative controls</span><span class="m__state">In progress</span></li>
+    <li><span class="m__date">Nov 11</span><span class="m__name">Drift and score-based detectors, tuned on NFCorpus</span><span class="m__state">Next</span></li>
+    <li><span class="m__date">Nov 18</span><span class="m__name">Canary queries, re-embedding, LLM judge, cost per check</span><span class="m__state">Planned</span></li>
+    <li><span class="m__date">Nov 24</span><span class="m__name">Held-out run on SciFact and FiQA, heatmap</span><span class="m__state">Planned</span></li>
+    <li><span class="m__date">Dec 1</span><span class="m__name">Benchmark release, monitoring guide, report</span><span class="m__state">Planned</span></li>
+  </ol>
 </section>
 
 </main>
@@ -242,7 +263,7 @@
 <footer class="tiles">
   <div class="tile tile--statement">
     <p>A benchmark for noticing retrieval damage before your users do.</p>
-    <p class="tile__legal">Data: BEIR (NFCorpus, SciFact, FiQA). Models: sentence-transformers.</p>
+    <p class="tile__legal">DS5500 Capstone, Northeastern University, Fall 2026. Data: BEIR (NFCorpus, SciFact, FiQA).</p>
   </div>
   <nav class="tile tile--nav" aria-label="Footer">
     <a href="#how">How it works</a>
@@ -250,9 +271,9 @@
     <a href="#detectors">Detectors</a>
     <a href="#status">Status</a>
   </nav>
-  <div class="tile tile--time">
-    <p>Boston</p>
-    <p class="tile__big" data-clock>Eastern time</p>
+  <div class="tile tile--team">
+    <p>Team</p>
+    <p class="tile__names">Srikar Manda<br>Alekhya Bulusu<br>Shane Hussey<br>Ying-Jen Chiang</p>
   </div>
   <div class="tile tile--mail">
     <p>Questions or ideas</p>
@@ -263,7 +284,6 @@
     <span>Read the code</span>
     <svg viewBox="0 0 48 48" width="56" height="56" aria-hidden="true"><path d="M10 38 38 10M16 10h22v22" fill="none" stroke="currentColor" stroke-width="4"/></svg>
   </a>
-  <p class="credits">Pictures, all public domain via Wikimedia Commons: <a href="https://commons.wikimedia.org/wiki/File:Card_Division_of_the_Library_of_Congress_3c18631u_original.jpg">“Card Division of the Library of Congress”</a>; <a href="https://commons.wikimedia.org/wiki/File:Catalogue_BGE_2.JPG">“Catalogue BGE 2”</a> by Mourad Ben Abdallah; <a href="https://commons.wikimedia.org/wiki/File:Library_of_Congress_Serials_Card_Catalog_in_the_John_Adams_Building_on_23_January_2025.jpg">“Library of Congress Serials Card Catalog”</a> by Shawn Miller, Library of Congress (CC0); <a href="https://commons.wikimedia.org/wiki/File:Boston_Public_Library_McKim_Building_Reading_Room.jpg">“Boston Public Library McKim Building Reading Room”</a> by Ncysea.</p>
 </footer>
 
 <script src="data.js"></script>

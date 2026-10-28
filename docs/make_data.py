@@ -66,4 +66,16 @@ def top3(s, i):
     ids, scores, nd = per_q[s]
     return {"ndcg": round(float(nd[i]), 3), "r": [[titles.get(d, d)[:80], int(ds.qrels[qids[i]].get(d, 0) > 0)] for d in ids[i][:3]]}
 out["all"] = [{"q": qtexts[i], "clean": top3(0.0, i), "mixed": top3(0.5, i)} for i in range(len(qids))]
+
+# index map: every doc projected on the clean index's first two principal components,
+# plus where a sample of docs lands once the other model re-embeds them
+X = state.doc_embeddings
+mu = X.mean(0)
+P = np.linalg.svd(X - mu, full_matrices=False)[2][:2].T
+a, b = (X - mu) @ P, (alt - mu) @ P
+lo, hi = a.min(0), a.max(0)
+norm = lambda v: np.round((v - lo) / (hi - lo), 3).tolist()
+moved = np.random.default_rng(3).choice(len(X), 260, replace=False)
+out["map"] = {"docs": norm(a), "from": norm(a[moved]), "to": norm(b[moved]),
+              "cos": round(float((X * alt).sum(1).mean()), 2)}
 open(sys.argv[1], "w").write("window.SRF = " + json.dumps(out, separators=(",", ":")) + ";\n")
