@@ -1,3 +1,6 @@
 node_modules/
 .next/
 out/
+
+# the page data; the repo root ignores data/ for experiment outputs
+!data/
