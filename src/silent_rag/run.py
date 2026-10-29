@@ -105,6 +105,49 @@ def check_severities(failures: dict) -> None:
         raise SystemExit(f"severity is the fraction affected and has to be in (0, 1], got {bad}")
 
 
+def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
+    """label -> (injector name, severities, constructor params).
+
+    configs give `label: {injector: name, severities: [...], param: value}`, or the
+    older `name: [severities]`, where the label is the injector name and there are no params.
+    """
+    if failures is None:
+        return {}
+    if not isinstance(failures, dict):
+        raise SystemExit(f"failures must be a mapping of label to entry, got {failures!r}")
+    parsed = {}
+    for label, entry in failures.items():
+        if not isinstance(label, str) or not label.strip():
+            raise SystemExit(f"failure labels must be non-blank strings, got {label!r}")
+        key = label.strip().casefold()
+        if key == "clean":
+            raise SystemExit(f"{label!r}: 'clean' is the undamaged condition, pick another label")
+        if isinstance(entry, list):
+            name, sevs, params = label, entry, {}
+        elif isinstance(entry, dict):
+            params = dict(entry)
+            name = params.pop("injector", None)
+            if not isinstance(name, str) or not name.strip():
+                raise SystemExit(f"{label}: needs `injector:` naming a registered injector, got {name!r}")
+            if "severities" not in params:
+                raise SystemExit(f"{label}: needs `severities: [...]`")
+            sevs = params.pop("severities")
+        else:
+            raise SystemExit(f"{label}: expected [severities] or {{injector: name, severities: [...]}}, got {entry!r}")
+        if name not in INJECTORS:
+            raise SystemExit(f"{label}: no injector registered as {name!r}, available: {sorted(INJECTORS)}")
+        # a label may be its own injector's name, never another one's, or the results table is ambiguous
+        others = {n.casefold(): n for n in INJECTORS if n != name}
+        if key in others:
+            raise SystemExit(f"{label}: is the registered name of {others[key]!r}, pick another label")
+        check_severities({label: sevs})
+        for prev, (prev_name, _, prev_params) in parsed.items():
+            if prev_name == name and prev_params == params:
+                raise SystemExit(f"{label} and {prev} run {name} with the same parameters")
+        parsed[label] = (name, sevs, params)
+    return parsed
+
+
 def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
     if damaged.query_embeddings is None:
         return retriever.embed_queries([damaged.query_texts[i] for i in idx])
