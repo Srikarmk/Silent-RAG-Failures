@@ -7,6 +7,10 @@ come from the config, since they decide how much damage F1 does.
 
 from __future__ import annotations
 
+import dataclasses
+
+import numpy as np
+
 from silent_rag.inject.base import Injector
 from silent_rag.pipeline import Retriever
 from silent_rag.types import RetrievalState
@@ -38,3 +42,19 @@ class PartialUpgrade(Injector):
                 f"{state.doc_embeddings.shape[1]}-dim, F1 needs a model with the same dimension"
             )
         self.alt_embeddings = vecs
+        self.attached_doc_ids = list(state.doc_ids)
+
+    def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState:
+        if not hasattr(self, "alt_embeddings"):
+            raise RuntimeError(f"{self.name}: call attach() before apply(), it builds the alt model's vectors")
+        n = len(state.doc_ids)
+        if list(state.doc_ids) != self.attached_doc_ids:
+            msg = f"{self.name}: state's doc_ids don't match the state passed to attach()"
+            if n != len(self.attached_doc_ids):
+                msg += f", state has {n} rows but attach() was given {len(self.attached_doc_ids)}"
+            raise ValueError(msg)
+        # one permutation per seed, cut at the severity: higher severities upgrade a superset of rows
+        rows = np.random.default_rng(seed).permutation(n)[: round(severity * n)]
+        emb = state.doc_embeddings.copy()
+        emb[rows] = self.alt_embeddings[rows]
+        return dataclasses.replace(state, doc_embeddings=emb)
