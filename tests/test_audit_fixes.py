@@ -136,12 +136,19 @@ class CountingInjector(ScrambleDocs):
     name = "test_counting"
     made = 0
     attached = []
+    attached_states = []
+    applied_states = []
 
     def __init__(self):
         CountingInjector.made += 1
 
     def attach(self, retriever, state):
         CountingInjector.attached.append(retriever)
+        CountingInjector.attached_states.append(state)
+
+    def apply(self, state, severity, seed):
+        CountingInjector.applied_states.append(state)
+        return super().apply(state, severity, seed)
 
 
 def test_one_injector_per_failure_attached_once(monkeypatch):
@@ -150,6 +157,19 @@ def test_one_injector_per_failure_attached_once(monkeypatch):
     CountingInjector.made, CountingInjector.attached = 0, []
     run({"failures": {CountingInjector.name: [0.1, 0.5, 0.9]}, "detectors": [MeanTop1.name]})
     assert CountingInjector.made == 1 and len(CountingInjector.attached) == 1
+
+
+def test_attach_and_every_apply_get_the_same_clean_state(monkeypatch):
+    monkeypatch.setitem(INJECTORS, CountingInjector.name, CountingInjector)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    monkeypatch.setattr(CountingInjector, "attached_states", [])
+    monkeypatch.setattr(CountingInjector, "applied_states", [])
+    severities, trials = [0.1, 0.5], 3
+    run({"failures": {CountingInjector.name: severities}, "detectors": [MeanTop1.name], "trials": trials})
+    [clean] = CountingInjector.attached_states
+    assert len(CountingInjector.applied_states) == len(severities) * trials
+    assert all(s is clean for s in CountingInjector.applied_states)
+    assert not clean.doc_embeddings.flags.writeable
 
 
 def test_injector_seeds_dont_collide_across_config_seeds():
