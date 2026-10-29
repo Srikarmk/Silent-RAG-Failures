@@ -338,6 +338,23 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     return to_frame(rows)
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    """yaml.safe_load silently keeps the last of two repeated keys, so a repeated failure
+    label would drop the first entry. This refuses them instead."""
+
+    def construct_mapping(self, node, deep=False):
+        keys, line = [], None
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if line is None and key in keys:
+                line = key_node.start_mark.line + 1  # where the first repeat is written
+            keys.append(key)
+        repeated = sorted({str(k) for k in keys if keys.count(k) > 1})
+        if repeated:
+            raise SystemExit(f"line {line}: repeated keys {repeated}")
+        return super().construct_mapping(node, deep=deep)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config")
@@ -355,7 +372,7 @@ def main() -> None:
         parser.error("--config is required")
 
     with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+        cfg = yaml.load(f, Loader=UniqueKeyLoader)
     check_datasets(cfg["datasets"], args.final)
 
     df = run(cfg, final=args.final)

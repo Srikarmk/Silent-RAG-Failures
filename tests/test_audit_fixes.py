@@ -2,6 +2,7 @@ import dataclasses
 
 import numpy as np
 import pytest
+import yaml
 
 from silent_rag import run as runner
 from silent_rag.detect.base import REGISTRY as DETECTORS
@@ -272,6 +273,16 @@ def test_labels_must_differ_beyond_case_and_spaces(label_injectors):
     assert set(runner.failure_params({"test_param": ENTRY, "TEST_PARAM_2": stronger})) == {"test_param", "TEST_PARAM_2"}
     with pytest.raises(SystemExit, match="differ only in case or spaces"):
         runner.failure_params({"test_param": ENTRY, " TEST_PARAM ": stronger})
+
+
+def test_config_with_a_repeated_key_is_rejected(tmp_path, monkeypatch):
+    text = "datasets: [nfcorpus]\nfailures:\n  a: [0.5]\n  b: [0.5]\n"
+    assert yaml.load(text, Loader=runner.UniqueKeyLoader) == yaml.safe_load(text)
+    path = tmp_path / "cfg.yaml"
+    path.write_text(text + "  a: [0.9]\n")
+    monkeypatch.setattr("sys.argv", ["run", "--config", str(path)])
+    with pytest.raises(SystemExit, match=r"line 5: repeated keys \['a'\]"):
+        runner.main()
 
 
 def test_duplicate_datasets_run_once():
