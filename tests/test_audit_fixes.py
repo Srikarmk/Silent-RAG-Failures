@@ -140,7 +140,7 @@ class CountingInjector(ScrambleDocs):
     def __init__(self):
         CountingInjector.made += 1
 
-    def attach(self, retriever):
+    def attach(self, retriever, state):
         CountingInjector.attached.append(retriever)
 
 

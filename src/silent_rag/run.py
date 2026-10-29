@@ -198,7 +198,7 @@ def run_dataset(ds, retriever, cfg, rid: str | None = None) -> list[ResultRow]:
     made = {}
     for name, cls in injectors.items():
         made[name] = cls()
-        made[name].attach(retriever)
+        made[name].attach(retriever, state)
 
     conditions = [("clean", 0.0)] + [(f, s) for f, sevs in failures.items() for s in sevs]
     rows = []
