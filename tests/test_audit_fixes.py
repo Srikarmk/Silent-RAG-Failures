@@ -241,29 +241,37 @@ def test_failure_params_accepts_list_and_label_forms(label_injectors):
 ENTRY = {"injector": "test_param", "severities": [0.5]}
 
 
-@pytest.mark.parametrize("failures", [
-    pytest.param(["test_param"], id="not-a-mapping"),
-    pytest.param({1: ENTRY}, id="label-not-str"),
-    pytest.param({" ": ENTRY}, id="label-blank"),
-    pytest.param({"clean": ENTRY}, id="label-clean"),
-    pytest.param({" Clean ": ENTRY}, id="label-clean-case"),
-    pytest.param({"test_other": ENTRY}, id="label-other-injector"),
-    pytest.param({"TEST_Other": ENTRY}, id="label-other-injector-case"),
-    pytest.param({"x": "test_param"}, id="entry-neither-form"),
-    pytest.param({"x": {"severities": [0.5]}}, id="injector-missing"),
-    pytest.param({"x": {"injector": " ", "severities": [0.5]}}, id="injector-blank"),
-    pytest.param({"x": {"injector": None, "severities": [0.5]}}, id="injector-null"),
-    pytest.param({"x": {"injector": "nope", "severities": [0.5]}}, id="injector-unregistered"),
-    pytest.param({"nope": [0.5]}, id="list-form-unregistered"),
-    pytest.param({"x": {"injector": "test_param"}}, id="severities-missing"),
-    pytest.param({"x": {"injector": "test_param", "severities": 0.5}}, id="severities-not-list"),
-    pytest.param({"x": {"injector": "test_param", "severities": [1.5]}}, id="severity-out-of-range"),
-    pytest.param({"a": ENTRY, "b": ENTRY}, id="same-params-twice"),
-    pytest.param({"test_param": [0.5], "b": ENTRY}, id="same-params-as-list-form"),
+@pytest.mark.parametrize("failures, match", [
+    pytest.param(["test_param"], "must be a mapping", id="not-a-mapping"),
+    pytest.param({1: ENTRY}, "non-blank strings", id="label-not-str"),
+    pytest.param({" ": ENTRY}, "non-blank strings", id="label-blank"),
+    pytest.param({"clean": ENTRY}, "undamaged condition", id="label-clean"),
+    pytest.param({" Clean ": ENTRY}, "undamaged condition", id="label-clean-case"),
+    pytest.param({"test_other": ENTRY}, "registered name of 'test_other'", id="label-other-injector"),
+    pytest.param({"TEST_Other": ENTRY}, "registered name of 'test_other'", id="label-other-injector-case"),
+    pytest.param({"x": "test_param"}, "expected", id="entry-neither-form"),
+    pytest.param({"x": {"severities": [0.5]}}, "needs `injector:`", id="injector-missing"),
+    pytest.param({"x": {"injector": " ", "severities": [0.5]}}, "needs `injector:`", id="injector-blank"),
+    pytest.param({"x": {"injector": None, "severities": [0.5]}}, "needs `injector:`", id="injector-null"),
+    pytest.param({"x": {"injector": "nope", "severities": [0.5]}}, "no injector registered as 'nope'",
+                 id="injector-unregistered"),
+    pytest.param({"nope": [0.5]}, "no injector registered as 'nope'", id="list-form-unregistered"),
+    pytest.param({"x": {"injector": "test_param"}}, "needs `severities", id="severities-missing"),
+    pytest.param({"x": {"injector": "test_param", "severities": 0.5}}, "must be a list", id="severities-not-list"),
+    pytest.param({"x": {"injector": "test_param", "severities": [1.5]}}, r"in \(0, 1\]", id="severity-out-of-range"),
+    pytest.param({"a": ENTRY, "b": ENTRY}, "same parameters", id="same-params-twice"),
+    pytest.param({"test_param": [0.5], "b": ENTRY}, "same parameters", id="same-params-as-list-form"),
 ])
-def test_failure_params_rejects_bad_entries(label_injectors, failures):
-    with pytest.raises(SystemExit):
+def test_failure_params_rejects_bad_entries(label_injectors, failures, match):
+    with pytest.raises(SystemExit, match=match):
         runner.failure_params(failures)
+
+
+def test_labels_must_differ_beyond_case_and_spaces(label_injectors):
+    stronger = {**ENTRY, "strength": 2}
+    assert set(runner.failure_params({"test_param": ENTRY, "TEST_PARAM_2": stronger})) == {"test_param", "TEST_PARAM_2"}
+    with pytest.raises(SystemExit, match="differ only in case or spaces"):
+        runner.failure_params({"test_param": ENTRY, " TEST_PARAM ": stronger})
 
 
 def test_duplicate_datasets_run_once():

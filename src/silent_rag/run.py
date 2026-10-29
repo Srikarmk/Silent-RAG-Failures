@@ -115,13 +115,16 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
         return {}
     if not isinstance(failures, dict):
         raise SystemExit(f"failures must be a mapping of label to entry, got {failures!r}")
-    parsed = {}
+    parsed, keys = {}, {}
     for label, entry in failures.items():
         if not isinstance(label, str) or not label.strip():
             raise SystemExit(f"failure labels must be non-blank strings, got {label!r}")
         key = label.strip().casefold()
         if key == "clean":
             raise SystemExit(f"{label!r}: 'clean' is the undamaged condition, pick another label")
+        if key in keys:
+            raise SystemExit(f"{label!r} and {keys[key]!r} differ only in case or spaces, pick distinct labels")
+        keys[key] = label
         if isinstance(entry, list):
             name, sevs, params = label, entry, {}
         elif isinstance(entry, dict):
