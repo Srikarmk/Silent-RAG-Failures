@@ -74,6 +74,21 @@ def test_embed_texts_caches_under_name_and_key(tmp_path):
     np.testing.assert_array_equal(a, b)
 
 
+@pytest.mark.parametrize("change", [{"model": "fake-alt"}, {"revision": "v2"}], ids=["model", "revision"])
+def test_embed_texts_misses_cache_when_model_or_revision_changes(tmp_path, change):
+    ds = toy_dataset()
+    ids, texts = list(ds.corpus), list(ds.corpus.values())
+    base = {"model": "fake", "revision": None}
+    enc_a, enc_b = HashEncoder(), HashEncoder()
+
+    _, key_a = Retriever(**base, encoder=enc_a).embed_texts("toy", ids, texts, cache_dir=tmp_path)
+    _, key_b = Retriever(**{**base, **change}, encoder=enc_b).embed_texts("toy", ids, texts, cache_dir=tmp_path)
+
+    assert key_a != key_b
+    assert sorted(tmp_path.iterdir()) == sorted(tmp_path / f"toy-{k}.npy" for k in (key_a, key_b))
+    assert enc_b.calls == 1, f"changing {change} must encode, not load the first file"
+
+
 @pytest.mark.parametrize("name", ["SciFact", "BeIR/scifact", "fiqa-2018", " FIQA "])
 def test_held_out_aliases_are_blocked(name):
     with pytest.raises(SystemExit):
