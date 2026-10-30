@@ -21,7 +21,7 @@ class ChunkHalf(Injector):
 
     name = "test_chunk"
 
-    def attach(self, retriever):
+    def attach(self, retriever, state):
         self.retriever = retriever
 
     def apply(self, state, severity, seed):

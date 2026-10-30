@@ -105,6 +105,52 @@ def check_severities(failures: dict) -> None:
         raise SystemExit(f"severity is the fraction affected and has to be in (0, 1], got {bad}")
 
 
+def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
+    """label -> (injector name, severities, constructor params).
+
+    configs give `label: {injector: name, severities: [...], param: value}`, or the
+    older `name: [severities]`, where the label is the injector name and there are no params.
+    """
+    if failures is None:
+        return {}
+    if not isinstance(failures, dict):
+        raise SystemExit(f"failures must be a mapping of label to entry, got {failures!r}")
+    parsed, keys = {}, {}
+    for label, entry in failures.items():
+        if not isinstance(label, str) or not label.strip():
+            raise SystemExit(f"failure labels must be non-blank strings, got {label!r}")
+        key = label.strip().casefold()
+        if key == "clean":
+            raise SystemExit(f"{label!r}: 'clean' is the undamaged condition, pick another label")
+        if key in keys:
+            raise SystemExit(f"{label!r} and {keys[key]!r} differ only in case or spaces, pick distinct labels")
+        keys[key] = label
+        if isinstance(entry, list):
+            name, sevs, params = label, entry, {}
+        elif isinstance(entry, dict):
+            params = dict(entry)
+            name = params.pop("injector", None)
+            if not isinstance(name, str) or not name.strip():
+                raise SystemExit(f"{label}: needs `injector:` naming a registered injector, got {name!r}")
+            if "severities" not in params:
+                raise SystemExit(f"{label}: needs `severities: [...]`")
+            sevs = params.pop("severities")
+        else:
+            raise SystemExit(f"{label}: expected [severities] or {{injector: name, severities: [...]}}, got {entry!r}")
+        if name not in INJECTORS:
+            raise SystemExit(f"{label}: no injector registered as {name!r}, available: {sorted(INJECTORS)}")
+        # a label may be its own injector's name, never another one's, or the results table is ambiguous
+        others = {n.casefold(): n for n in INJECTORS if n != name}
+        if key in others:
+            raise SystemExit(f"{label}: is the registered name of {others[key]!r}, pick another label")
+        check_severities({label: sevs})
+        for prev, (prev_name, _, prev_params) in parsed.items():
+            if prev_name == name and prev_params == params:
+                raise SystemExit(f"{label} and {prev} run {name} with the same parameters")
+        parsed[label] = (name, sevs, params)
+    return parsed
+
+
 def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
     if damaged.query_embeddings is None:
         return retriever.embed_queries([damaged.query_texts[i] for i in idx])
@@ -198,7 +244,7 @@ def run_dataset(ds, retriever, cfg, rid: str | None = None) -> list[ResultRow]:
     made = {}
     for name, cls in injectors.items():
         made[name] = cls()
-        made[name].attach(retriever)
+        made[name].attach(retriever, state)
 
     conditions = [("clean", 0.0)] + [(f, s) for f, sevs in failures.items() for s in sevs]
     rows = []
@@ -292,6 +338,23 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     return to_frame(rows)
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    """yaml.safe_load silently keeps the last of two repeated keys, so a repeated failure
+    label would drop the first entry. This refuses them instead."""
+
+    def construct_mapping(self, node, deep=False):
+        keys, line = [], None
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if line is None and key in keys:
+                line = key_node.start_mark.line + 1  # where the first repeat is written
+            keys.append(key)
+        repeated = sorted({str(k) for k in keys if keys.count(k) > 1})
+        if repeated:
+            raise SystemExit(f"line {line}: repeated keys {repeated}")
+        return super().construct_mapping(node, deep=deep)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config")
@@ -309,7 +372,7 @@ def main() -> None:
         parser.error("--config is required")
 
     with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+        cfg = yaml.load(f, Loader=UniqueKeyLoader)
     check_datasets(cfg["datasets"], args.final)
 
     df = run(cfg, final=args.final)

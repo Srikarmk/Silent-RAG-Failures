@@ -2,6 +2,7 @@ import dataclasses
 
 import numpy as np
 import pytest
+import yaml
 
 from silent_rag import run as runner
 from silent_rag.detect.base import REGISTRY as DETECTORS
@@ -136,12 +137,19 @@ class CountingInjector(ScrambleDocs):
     name = "test_counting"
     made = 0
     attached = []
+    attached_states = []
+    applied_states = []
 
     def __init__(self):
         CountingInjector.made += 1
 
-    def attach(self, retriever):
+    def attach(self, retriever, state):
         CountingInjector.attached.append(retriever)
+        CountingInjector.attached_states.append(state)
+
+    def apply(self, state, severity, seed):
+        CountingInjector.applied_states.append(state)
+        return super().apply(state, severity, seed)
 
 
 def test_one_injector_per_failure_attached_once(monkeypatch):
@@ -150,6 +158,19 @@ def test_one_injector_per_failure_attached_once(monkeypatch):
     CountingInjector.made, CountingInjector.attached = 0, []
     run({"failures": {CountingInjector.name: [0.1, 0.5, 0.9]}, "detectors": [MeanTop1.name]})
     assert CountingInjector.made == 1 and len(CountingInjector.attached) == 1
+
+
+def test_attach_and_every_apply_get_the_same_clean_state(monkeypatch):
+    monkeypatch.setitem(INJECTORS, CountingInjector.name, CountingInjector)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    monkeypatch.setattr(CountingInjector, "attached_states", [])
+    monkeypatch.setattr(CountingInjector, "applied_states", [])
+    severities, trials = [0.1, 0.5], 3
+    run({"failures": {CountingInjector.name: severities}, "detectors": [MeanTop1.name], "trials": trials})
+    [clean] = CountingInjector.attached_states
+    assert len(CountingInjector.applied_states) == len(severities) * trials
+    assert all(s is clean for s in CountingInjector.applied_states)
+    assert not clean.doc_embeddings.flags.writeable
 
 
 def test_injector_seeds_dont_collide_across_config_seeds():
@@ -180,6 +201,88 @@ def test_run_id_ignores_spelled_out_defaults():
 def test_bad_severities_are_rejected_readably(sevs):
     with pytest.raises(SystemExit):
         runner.check_severities({"F1": sevs})
+
+
+class ParamInjector(Injector):
+    name = "test_param"
+
+    def __init__(self, strength=1):
+        self.strength = strength
+
+    def apply(self, state, severity, seed):
+        return state
+
+
+class OtherInjector(Injector):
+    name = "test_other"
+
+    def apply(self, state, severity, seed):
+        return state
+
+
+@pytest.fixture
+def label_injectors(monkeypatch):
+    monkeypatch.setitem(INJECTORS, ParamInjector.name, ParamInjector)
+    monkeypatch.setitem(INJECTORS, OtherInjector.name, OtherInjector)
+
+
+def test_failure_params_accepts_list_and_label_forms(label_injectors):
+    assert runner.failure_params(None) == {}
+    assert runner.failure_params({
+        "test_other": [0.5],
+        "test_param": {"injector": "test_param", "severities": [0.2]},  # a label may be its own injector's name
+        "strong": {"injector": "test_param", "severities": [0.1, 0.9], "strength": 3},
+    }) == {
+        "test_other": ("test_other", [0.5], {}),
+        "test_param": ("test_param", [0.2], {}),
+        "strong": ("test_param", [0.1, 0.9], {"strength": 3}),
+    }
+
+
+ENTRY = {"injector": "test_param", "severities": [0.5]}
+
+
+@pytest.mark.parametrize("failures, match", [
+    pytest.param(["test_param"], "must be a mapping", id="not-a-mapping"),
+    pytest.param({1: ENTRY}, "non-blank strings", id="label-not-str"),
+    pytest.param({" ": ENTRY}, "non-blank strings", id="label-blank"),
+    pytest.param({"clean": ENTRY}, "undamaged condition", id="label-clean"),
+    pytest.param({" Clean ": ENTRY}, "undamaged condition", id="label-clean-case"),
+    pytest.param({"test_other": ENTRY}, "registered name of 'test_other'", id="label-other-injector"),
+    pytest.param({"TEST_Other": ENTRY}, "registered name of 'test_other'", id="label-other-injector-case"),
+    pytest.param({"x": "test_param"}, "expected", id="entry-neither-form"),
+    pytest.param({"x": {"severities": [0.5]}}, "needs `injector:`", id="injector-missing"),
+    pytest.param({"x": {"injector": " ", "severities": [0.5]}}, "needs `injector:`", id="injector-blank"),
+    pytest.param({"x": {"injector": None, "severities": [0.5]}}, "needs `injector:`", id="injector-null"),
+    pytest.param({"x": {"injector": "nope", "severities": [0.5]}}, "no injector registered as 'nope'",
+                 id="injector-unregistered"),
+    pytest.param({"nope": [0.5]}, "no injector registered as 'nope'", id="list-form-unregistered"),
+    pytest.param({"x": {"injector": "test_param"}}, "needs `severities", id="severities-missing"),
+    pytest.param({"x": {"injector": "test_param", "severities": 0.5}}, "must be a list", id="severities-not-list"),
+    pytest.param({"x": {"injector": "test_param", "severities": [1.5]}}, r"in \(0, 1\]", id="severity-out-of-range"),
+    pytest.param({"a": ENTRY, "b": ENTRY}, "same parameters", id="same-params-twice"),
+    pytest.param({"test_param": [0.5], "b": ENTRY}, "same parameters", id="same-params-as-list-form"),
+])
+def test_failure_params_rejects_bad_entries(label_injectors, failures, match):
+    with pytest.raises(SystemExit, match=match):
+        runner.failure_params(failures)
+
+
+def test_labels_must_differ_beyond_case_and_spaces(label_injectors):
+    stronger = {**ENTRY, "strength": 2}
+    assert set(runner.failure_params({"test_param": ENTRY, "TEST_PARAM_2": stronger})) == {"test_param", "TEST_PARAM_2"}
+    with pytest.raises(SystemExit, match="differ only in case or spaces"):
+        runner.failure_params({"test_param": ENTRY, " TEST_PARAM ": stronger})
+
+
+def test_config_with_a_repeated_key_is_rejected(tmp_path, monkeypatch):
+    text = "datasets: [nfcorpus]\nfailures:\n  a: [0.5]\n  b: [0.5]\n"
+    assert yaml.load(text, Loader=runner.UniqueKeyLoader) == yaml.safe_load(text)
+    path = tmp_path / "cfg.yaml"
+    path.write_text(text + "  a: [0.9]\n")
+    monkeypatch.setattr("sys.argv", ["run", "--config", str(path)])
+    with pytest.raises(SystemExit, match=r"line 5: repeated keys \['a'\]"):
+        runner.main()
 
 
 def test_duplicate_datasets_run_once():

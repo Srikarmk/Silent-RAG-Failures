@@ -212,7 +212,7 @@ class MyFailure(Injector):
 
 Keep query positions fixed. If the failure changes `query_texts`, set `query_embeddings=None` so the runner re-embeds them with the clean model; if it changes how queries are encoded, edit `query_embeddings` yourself (`state.config` is descriptive, nothing reads it to re-encode). The index and query arrays are read-only during a run, so copy before changing them. With chunking, set `parent_ids` and keep `doc_ids`, `doc_texts` and `doc_embeddings` row-aligned.
 
-The runner makes one injector per failure and calls `attach(retriever)` on it once, then reuses it for every severity and trial. Put expensive setup there (a second model's embeddings for the whole corpus, a re-chunked corpus) and pick rows per trial in `apply`, rather than re-embedding inside every trial.
+For each dataset and seed, the runner makes one injector per failure and calls `attach(retriever, state)` on it once, before any `apply`. `state` is the clean, read-only `RetrievalState`, the same object `apply` later receives, so `attach` can read `state.doc_ids` and `state.doc_texts`. The instance is then reused for every severity and trial. Put expensive setup in `attach` (a second model's embeddings for the whole corpus, a re-chunked corpus), keep the result on `self`, and pick rows per trial in `apply`, rather than re-embedding inside every trial. Encode through `Retriever.embed_texts` so the vectors are cached on disk and later seeds reuse them.
 
 **Adding a detector.** Same pattern in `src/silent_rag/detect/`:
 
