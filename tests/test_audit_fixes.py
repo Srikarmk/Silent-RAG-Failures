@@ -99,8 +99,9 @@ class InPlaceInjector(Injector):
 
 def test_detector_cannot_modify_the_index(monkeypatch):
     monkeypatch.setitem(DETECTORS, ScaleIndex.name, ScaleIndex)
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
     with pytest.raises(ValueError, match="read-only"):
-        run({"detectors": [ScaleIndex.name]})
+        run({"failures": {ScrambleDocs.name: [0.5]}, "detectors": [ScaleIndex.name]})
 
 
 def test_injector_cannot_modify_the_clean_state(monkeypatch):
@@ -238,7 +239,6 @@ def label_injectors(monkeypatch):
 
 
 def test_failure_params_accepts_list_and_label_forms(label_injectors):
-    assert runner.failure_params(None) == {}
     assert runner.failure_params({
         "test_other": [0.5],
         "test_param": {"injector": "test_param", "severities": [0.2]},  # a label may be its own injector's name
@@ -254,6 +254,8 @@ ENTRY = {"injector": "test_param", "severities": [0.5]}
 
 
 @pytest.mark.parametrize("failures, match", [
+    pytest.param(None, "at least one failure", id="null"),
+    pytest.param({}, "at least one failure", id="empty"),
     pytest.param(["test_param"], "must be a mapping", id="not-a-mapping"),
     pytest.param({1: ENTRY}, "non-blank strings", id="label-not-str"),
     pytest.param({" ": ENTRY}, "non-blank strings", id="label-blank"),
@@ -363,6 +365,15 @@ def test_run_checks_label_entries_before_any_work(label_injectors):
     cfg = {"datasets": ["nfcorpus"], "failures": {"x": {**ENTRY, "strenght": 2}}, "detectors": [],
            "window_size": 10, "trials": 1}
     with pytest.raises(SystemExit, match=r"x: bad parameters for test_param, given \['strenght'\]"):
+        runner.run(cfg, loader=loader)
+
+
+def test_run_rejects_a_missing_failures_key():
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    cfg = {"datasets": ["nfcorpus"], "detectors": [], "window_size": 10, "trials": 1}
+    with pytest.raises(SystemExit, match="at least one failure"):
         runner.run(cfg, loader=loader)
 
 

@@ -112,8 +112,8 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
     configs give `label: {injector: name, severities: [...], param: value}`, or the
     older `name: [severities]`, where the label is the injector name and there are no params.
     """
-    if failures is None:
-        return {}
+    if not failures:
+        raise SystemExit(f"failures must list at least one failure (it is missing, null or empty), got {failures!r}")
     if not isinstance(failures, dict):
         raise SystemExit(f"failures must be a mapping of label to entry, got {failures!r}")
     parsed, keys = {}, {}
