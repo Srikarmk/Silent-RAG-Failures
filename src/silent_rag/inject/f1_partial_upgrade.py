@@ -8,12 +8,11 @@ come from the config, since they decide how much damage F1 does.
 from __future__ import annotations
 
 import dataclasses
-import re
 
 import numpy as np
 
 from silent_rag.inject.base import Injector, register
-from silent_rag.pipeline import Retriever
+from silent_rag.pipeline import Retriever, is_commit_hash
 from silent_rag.types import RetrievalState
 
 # documents for these must start with "passage: " (e5 model card); F1 encodes them bare, which is a second kind of damage
@@ -36,7 +35,7 @@ class PartialUpgrade(Injector):
         if not isinstance(alt_model, str) or not alt_model.strip():
             raise ValueError(f"alt_model must be a non-empty model name, got {alt_model!r}")
         # lowercase only: the revision goes into the cache key, so one commit gets one spelling
-        if not isinstance(alt_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", alt_revision):
+        if not is_commit_hash(alt_revision):
             raise ValueError(f"alt_revision must be a 40-character lowercase commit hash, got {alt_revision!r}")
         # any revision: the clean revision may be unpinned, and a new revision of one model often has the same weights
         if alt_model.strip().casefold() == run_cfg["model"].strip().casefold():
