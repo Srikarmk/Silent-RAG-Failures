@@ -23,7 +23,7 @@ from silent_rag.detect.base import REGISTRY as DETECTORS
 from silent_rag.eval.ground_truth import paired_bootstrap, per_query_ndcg
 from silent_rag.eval.results import ResultRow, to_frame
 from silent_rag.inject.base import REGISTRY as INJECTORS
-from silent_rag.pipeline import Retriever
+from silent_rag.pipeline import Retriever, is_commit_hash
 from silent_rag.types import Observation
 
 # filled in before anything reads the config, so run_id doesn't depend on whether a default was spelled out
@@ -55,6 +55,16 @@ def check_datasets(datasets: list[str], final: bool) -> list[str]:
             "only for the real evaluation run."
         )
     return names
+
+
+def check_final_revision(run_cfg: dict, final: bool) -> None:
+    """Held-out numbers have to be reproducible, so --final needs the clean model pinned
+    to a commit, not whatever the Hub serves that day. Dev runs may leave it unpinned."""
+    if final and not is_commit_hash(run_cfg["revision"]):
+        raise SystemExit(
+            "--final needs the clean model's revision pinned to a 40-character lowercase "
+            f"commit hash, got {run_cfg['revision']!r}"
+        )
 
 
 def load_plugins() -> None:
@@ -348,7 +358,9 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
             raise SystemExit(f"bad parameters for {name}: {e}") from None
     make_retriever = make_retriever or (lambda: default_retriever(cfg))
     # building a Retriever doesn't load the model
-    check_injectors(failures, injector_run_cfg(make_retriever()))
+    run_cfg = injector_run_cfg(make_retriever())
+    check_injectors(failures, run_cfg)
+    check_final_revision(run_cfg, final)
     # one run_id for all seeds, so the replicates can be grouped together
     hashed = {**DEFAULTS, **cfg}
     if "seeds" in cfg:

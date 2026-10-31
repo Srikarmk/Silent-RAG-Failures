@@ -377,6 +377,30 @@ def test_run_rejects_a_missing_failures_key():
         runner.run(cfg, loader=loader)
 
 
+PINNED = "b207367332321f8e44f96e224ef15bc607f4dbf0"
+
+
+@pytest.mark.parametrize("revision", [None, PINNED.upper()], ids=["unpinned", "uppercase"])
+def test_final_run_needs_a_pinned_clean_revision_before_any_data(checked, revision):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    with pytest.raises(SystemExit, match=rf"^--final needs the clean model's revision pinned .*, got {revision!r}$"):
+        runner.run(checked_cfg({"a": CHECKED}), final=True, loader=loader,
+                   make_retriever=lambda: Retriever("fake", revision=revision, encoder=HashEncoder()))
+
+
+def test_dev_run_does_not_need_a_pinned_clean_revision(checked):
+    class Loaded(Exception):
+        pass
+
+    def loader(name):
+        raise Loaded
+
+    with pytest.raises(Loaded):
+        runner.run(checked_cfg({"a": CHECKED}), final=False, loader=loader, make_retriever=fake_retriever)
+
+
 class RecordingParamInjector(ParamInjector):
     strengths = []
 
