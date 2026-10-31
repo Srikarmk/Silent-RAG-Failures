@@ -177,7 +177,11 @@ def check_injectors(failures: dict, run_cfg: dict) -> None:
 
 
 def default_retriever(cfg: dict) -> Retriever:
-    return Retriever(cfg["model"], **cfg.get("retriever", {}))
+    model = cfg.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise SystemExit(f"config needs model: <sentence-transformers name>, got {model!r}")
+    # an empty `retriever:` block parses as null; treat it like no settings
+    return Retriever(model, **(cfg.get("retriever") or {}))
 
 
 def injector_run_cfg(retriever) -> dict:

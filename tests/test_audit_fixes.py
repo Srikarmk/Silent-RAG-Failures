@@ -377,6 +377,28 @@ def test_run_rejects_a_missing_failures_key():
         runner.run(cfg, loader=loader)
 
 
+def test_null_retriever_block_is_like_a_missing_one():
+    assert runner.default_retriever({"model": "m", "retriever": None}).config == runner.default_retriever({"model": "m"}).config
+
+
+@pytest.mark.parametrize("model", ["missing", None, "  "], ids=["missing", "null", "blank"])
+def test_default_retriever_needs_a_model(model):
+    cfg = {} if model == "missing" else {"model": model}
+    with pytest.raises(SystemExit, match=r"^config needs model: "):
+        runner.default_retriever(cfg)
+
+
+def test_run_without_model_stops_before_any_data(monkeypatch):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    cfg = {"datasets": ["nfcorpus"], "failures": {ScrambleDocs.name: [0.5]}, "detectors": [],
+           "window_size": 10, "trials": 1}
+    with pytest.raises(SystemExit, match=r"^config needs model: .*, got None$"):
+        runner.run(cfg, loader=loader)
+
+
 PINNED = "b207367332321f8e44f96e224ef15bc607f4dbf0"
 
 
