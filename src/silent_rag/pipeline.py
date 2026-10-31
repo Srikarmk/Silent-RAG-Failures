@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -23,6 +24,12 @@ def cache_key(dataset: str, model: str, chunking: dict, **settings) -> str:
         {"dataset": dataset, "model": model, "chunking": chunking, **settings}, sort_keys=True
     )
     return hashlib.sha1(blob.encode()).hexdigest()[:16]
+
+
+def is_commit_hash(revision) -> bool:
+    """A pinned Hub revision: a full 40-character commit hash, lowercase only, since the
+    revision goes into the cache key and one commit should have one spelling."""
+    return isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision) is not None
 
 
 class Retriever:
