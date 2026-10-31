@@ -294,6 +294,16 @@ def test_labels_must_differ_beyond_case_and_spaces(label_injectors):
         runner.failure_params({"test_param": ENTRY, " TEST_PARAM ": stronger})
 
 
+def test_run_checks_label_entries_before_any_work(label_injectors):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    cfg = {"datasets": ["nfcorpus"], "failures": {"x": {**ENTRY, "strenght": 2}}, "detectors": [],
+           "window_size": 10, "trials": 1}
+    with pytest.raises(SystemExit, match=r"x: bad parameters for test_param, given \['strenght'\]"):
+        runner.run(cfg, loader=loader)
+
+
 def test_config_with_a_repeated_key_is_rejected(tmp_path, monkeypatch):
     text = "datasets: [nfcorpus]\nfailures:\n  a: [0.5]\n  b: [0.5]\n"
     assert yaml.load(text, Loader=runner.UniqueKeyLoader) == yaml.safe_load(text)

@@ -321,8 +321,7 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     datasets = check_datasets(cfg["datasets"], final)
     seeds = run_seeds(cfg)
     load_plugins()
-    check_severities(cfg.get("failures") or {})
-    lookup(INJECTORS, cfg.get("failures") or {}, "injector")
+    failure_params(cfg.get("failures"))
     params = detector_params(cfg["detectors"])
     for name, cls in lookup(DETECTORS, params, "detector").items():
         try:
