@@ -74,4 +74,5 @@ def test_dev_and_final_use_the_same_retriever():
     dev, final = (load(CONFIGS[0].parent / f"{n}.yaml")[0] for n in ("dev", "final"))
     for key in ("model", "retriever", "window_size"):
         assert dev[key] == final[key], key
+    assert runner.run_seeds(dev) == runner.run_seeds(final), "seeds"
     assert dev["retriever"]["max_seq_length"] == 256
