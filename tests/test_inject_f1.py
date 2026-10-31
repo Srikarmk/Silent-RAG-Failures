@@ -154,6 +154,14 @@ def test_input_state_is_left_unchanged(monkeypatch):
     np.testing.assert_array_equal(state.doc_embeddings, before)
 
 
+def test_apply_passes_the_other_fields_through_as_the_same_objects(monkeypatch):
+    inj, state = attached(monkeypatch, ShiftedEncoder())
+    assert state.query_embeddings is not None
+    damaged = inj.apply(state, 0.9, seed=0)
+    for field in ("doc_ids", "doc_texts", "query_ids", "query_texts", "query_embeddings", "config"):
+        assert getattr(damaged, field) is getattr(state, field), field
+
+
 def test_apply_before_attach_is_an_error():
     state = Retriever("clean/model", encoder=HashEncoder()).embed_corpus(toy_dataset())
     with pytest.raises(RuntimeError, match=r"call attach\(\) before apply\(\)"):
