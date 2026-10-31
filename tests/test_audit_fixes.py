@@ -304,6 +304,25 @@ def test_run_checks_label_entries_before_any_work(label_injectors):
         runner.run(cfg, loader=loader)
 
 
+class RecordingParamInjector(ParamInjector):
+    strengths = []
+
+    def __init__(self, strength=1):
+        super().__init__(strength)
+        RecordingParamInjector.strengths.append(strength)
+
+
+def test_each_label_gets_its_own_injector_and_params(monkeypatch):
+    monkeypatch.setitem(INJECTORS, RecordingParamInjector.name, RecordingParamInjector)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    monkeypatch.setattr(RecordingParamInjector, "strengths", [])
+    entry = {"injector": RecordingParamInjector.name, "severities": [0.5]}
+    out = run({"failures": {"weak": {**entry, "strength": 1}, "strong": {**entry, "strength": 3}},
+               "detectors": [MeanTop1.name]})
+    assert RecordingParamInjector.strengths == [1, 3]
+    assert set(out.failure) == {"clean", "weak", "strong"}
+
+
 def test_config_with_a_repeated_key_is_rejected(tmp_path, monkeypatch):
     text = "datasets: [nfcorpus]\nfailures:\n  a: [0.5]\n  b: [0.5]\n"
     assert yaml.load(text, Loader=runner.UniqueKeyLoader) == yaml.safe_load(text)

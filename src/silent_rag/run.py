@@ -216,13 +216,12 @@ def injector_seed(seed: int, trial: int) -> int:
     return int(np.random.SeedSequence([seed, trial]).generate_state(1)[0])
 
 
-def run_dataset(ds, retriever, cfg, rid: str | None = None) -> list[ResultRow]:
+def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> list[ResultRow]:
+    """failures: what failure_params returns, label -> (injector name, severities, params)."""
     cfg = {**DEFAULTS, **cfg}
     k, seed, alpha, min_drop = cfg["k"], cfg["seed"], cfg["alpha"], cfg["min_drop"]
     window_size = cfg["window_size"]
     rid = rid or run_id(cfg)
-    failures = cfg.get("failures") or {}
-    injectors = lookup(INJECTORS, failures, "injector")
     params = detector_params(cfg["detectors"])
     detectors = lookup(DETECTORS, params, "detector")
 
@@ -246,13 +245,13 @@ def run_dataset(ds, retriever, cfg, rid: str | None = None) -> list[ResultRow]:
         fitted[name].attach(retriever)
         fitted[name].fit(reference)
 
-    # one injector per failure, so anything it caches (a second model's vectors) is reused across severities
+    # one injector per label, so anything it caches (a second model's vectors) is reused across severities
     made = {}
-    for name, cls in injectors.items():
-        made[name] = cls()
-        made[name].attach(retriever, state)
+    for label, (name, _, kwargs) in failures.items():
+        made[label] = INJECTORS[name](**kwargs)
+        made[label].attach(retriever, state)
 
-    conditions = [("clean", 0.0)] + [(f, s) for f, sevs in failures.items() for s in sevs]
+    conditions = [("clean", 0.0)] + [(f, s) for f, (_, sevs, _) in failures.items() for s in sevs]
     rows = []
     for failure, severity in conditions:
         injector = made.get(failure)
@@ -321,7 +320,7 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     datasets = check_datasets(cfg["datasets"], final)
     seeds = run_seeds(cfg)
     load_plugins()
-    failure_params(cfg.get("failures"))
+    failures = failure_params(cfg.get("failures"))
     params = detector_params(cfg["detectors"])
     for name, cls in lookup(DETECTORS, params, "detector").items():
         try:
@@ -339,7 +338,7 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     for name in datasets:
         ds, retriever = loader(name), make_retriever()
         for seed in seeds:
-            rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, rid=rid)
+            rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, failures, rid=rid)
     return to_frame(rows)
 
 
