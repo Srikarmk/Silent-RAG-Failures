@@ -26,6 +26,33 @@ def test_alt_model_and_revision_are_required(given):
     inspect.signature(PartialUpgrade).bind(**ALT)
 
 
+CLEAN = {"model": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1", "revision": "b207367332321f8e44f96e224ef15bc607f4dbf0"}
+PINNED = [
+    {"alt_model": "sentence-transformers/all-MiniLM-L6-v2", "alt_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"},
+    {"alt_model": "BAAI/bge-small-en-v1.5", "alt_revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"},
+]
+HASH = PINNED[0]["alt_revision"]
+
+
+@pytest.mark.parametrize("params", PINNED, ids=["minilm", "bge"])
+def test_check_config_accepts_the_pinned_dev_models(params):
+    assert PartialUpgrade.check_config(params, CLEAN) is None
+
+
+@pytest.mark.parametrize("alt_model", ["", " ", None, 123])
+def test_check_config_rejects_a_blank_or_non_string_alt_model(alt_model):
+    with pytest.raises(ValueError, match="alt_model must be a non-empty model name"):
+        PartialUpgrade.check_config({**PINNED[0], "alt_model": alt_model}, CLEAN)
+
+
+@pytest.mark.parametrize("alt_revision", [None, "abc123", "main", HASH[:-1], HASH + "0", HASH + "\n", HASH.upper(),
+                                          "g" + HASH[1:]],
+                         ids=["none", "short", "branch", "39", "41", "newline", "upper", "not-hex"])
+def test_check_config_rejects_a_revision_that_is_not_a_lowercase_commit_hash(alt_revision):
+    with pytest.raises(ValueError, match="alt_revision must be a 40-character lowercase commit hash"):
+        PartialUpgrade.check_config({**PINNED[0], "alt_revision": alt_revision}, CLEAN)
+
+
 class SmallEncoder:
     def encode(self, texts, batch_size=32, normalize_embeddings=True, convert_to_numpy=True):
         return np.ones((len(texts), 32), dtype=np.float32)

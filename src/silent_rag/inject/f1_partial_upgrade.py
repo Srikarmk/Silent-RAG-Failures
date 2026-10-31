@@ -8,6 +8,7 @@ come from the config, since they decide how much damage F1 does.
 from __future__ import annotations
 
 import dataclasses
+import re
 
 import numpy as np
 
@@ -24,6 +25,16 @@ class PartialUpgrade(Injector):
     def __init__(self, alt_model: str, alt_revision: str):
         self.alt_model = alt_model
         self.alt_revision = alt_revision
+
+    @classmethod
+    def check_config(cls, params: dict, run_cfg: dict) -> None:
+        # binding already guaranteed both keys are present
+        alt_model, alt_revision = params["alt_model"], params["alt_revision"]
+        if not isinstance(alt_model, str) or not alt_model.strip():
+            raise ValueError(f"alt_model must be a non-empty model name, got {alt_model!r}")
+        # lowercase only: the revision goes into the cache key, so one commit gets one spelling
+        if not isinstance(alt_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", alt_revision):
+            raise ValueError(f"alt_revision must be a 40-character lowercase commit hash, got {alt_revision!r}")
 
     def attach(self, retriever, state: RetrievalState) -> None:
         # same settings as the clean retriever, only the model changes; not its encoder, that's the clean model
