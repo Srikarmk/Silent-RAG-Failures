@@ -16,6 +16,9 @@ from silent_rag.inject.base import Injector, register
 from silent_rag.pipeline import Retriever
 from silent_rag.types import RetrievalState
 
+# documents for these must start with "passage: " (e5 model card); F1 encodes them bare, which is a second kind of damage
+PREFIX_MODELS = ("intfloat/e5-", "intfloat/multilingual-e5-")
+
 
 @register
 class PartialUpgrade(Injector):
@@ -38,6 +41,8 @@ class PartialUpgrade(Injector):
         # any revision: the clean revision may be unpinned, and a new revision of one model often has the same weights
         if alt_model.strip().casefold() == run_cfg["model"].strip().casefold():
             raise ValueError(f"alt_model {alt_model!r} is the clean model; F1 needs a different model, whatever the revision")
+        if alt_model.strip().casefold().startswith(PREFIX_MODELS):
+            raise ValueError(f"alt_model {alt_model!r} needs a document prefix (e.g. 'passage: '), which F1 doesn't add")
 
     def attach(self, retriever, state: RetrievalState) -> None:
         # same settings as the clean retriever, only the model changes; not its encoder, that's the clean model
