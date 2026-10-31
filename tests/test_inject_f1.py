@@ -5,11 +5,18 @@ import numpy as np
 import pytest
 
 from silent_rag import pipeline
+from silent_rag.inject.base import REGISTRY
 from silent_rag.inject.f1_partial_upgrade import PartialUpgrade
 from silent_rag.pipeline import Retriever
+from silent_rag.run import load_plugins
 from test_pipeline import HashEncoder, toy_dataset
 
 ALT = {"alt_model": "alt/model", "alt_revision": "abc123"}
+
+
+def test_registered_under_its_config_name():
+    load_plugins()
+    assert REGISTRY["F1_partial_upgrade"] is PartialUpgrade
 
 
 @pytest.mark.parametrize("given", [{}, {"alt_model": ALT["alt_model"]}, {"alt_revision": ALT["alt_revision"]}])

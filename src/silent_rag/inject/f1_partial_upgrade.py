@@ -11,11 +11,12 @@ import dataclasses
 
 import numpy as np
 
-from silent_rag.inject.base import Injector
+from silent_rag.inject.base import Injector, register
 from silent_rag.pipeline import Retriever
 from silent_rag.types import RetrievalState
 
 
+@register
 class PartialUpgrade(Injector):
     name = "F1_partial_upgrade"
     retriever_cls = Retriever  # tests swap in one with a fake encoder
