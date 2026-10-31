@@ -53,6 +53,18 @@ def test_check_config_rejects_a_revision_that_is_not_a_lowercase_commit_hash(alt
         PartialUpgrade.check_config({**PINNED[0], "alt_revision": alt_revision}, CLEAN)
 
 
+@pytest.mark.parametrize("alt_model, alt_revision, clean_revision", [
+    (CLEAN["model"], CLEAN["revision"], CLEAN["revision"]),
+    ("  Sentence-Transformers/Multi-QA-MiniLM-L6-cos-v1 ", CLEAN["revision"], CLEAN["revision"]),
+    (CLEAN["model"], HASH, CLEAN["revision"]),
+    (CLEAN["model"], HASH, None),
+], ids=["exact", "case-and-spaces", "other-revision", "clean-unpinned"])
+def test_check_config_rejects_the_clean_model_whatever_the_revision(alt_model, alt_revision, clean_revision):
+    with pytest.raises(ValueError, match="is the clean model"):
+        PartialUpgrade.check_config({"alt_model": alt_model, "alt_revision": alt_revision},
+                                    {**CLEAN, "revision": clean_revision})
+
+
 class SmallEncoder:
     def encode(self, texts, batch_size=32, normalize_embeddings=True, convert_to_numpy=True):
         return np.ones((len(texts), 32), dtype=np.float32)

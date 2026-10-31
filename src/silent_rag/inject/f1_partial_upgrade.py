@@ -35,6 +35,9 @@ class PartialUpgrade(Injector):
         # lowercase only: the revision goes into the cache key, so one commit gets one spelling
         if not isinstance(alt_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", alt_revision):
             raise ValueError(f"alt_revision must be a 40-character lowercase commit hash, got {alt_revision!r}")
+        # any revision: the clean revision may be unpinned, and a new revision of one model often has the same weights
+        if alt_model.strip().casefold() == run_cfg["model"].strip().casefold():
+            raise ValueError(f"alt_model {alt_model!r} is the clean model; F1 needs a different model, whatever the revision")
 
     def attach(self, retriever, state: RetrievalState) -> None:
         # same settings as the clean retriever, only the model changes; not its encoder, that's the clean model
