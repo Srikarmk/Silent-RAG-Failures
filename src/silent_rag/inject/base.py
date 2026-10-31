@@ -27,6 +27,13 @@ class Injector(ABC):
         (a second model's corpus embeddings, a re-chunked corpus) belongs here, kept
         on self."""
 
+    @classmethod
+    def check_config(cls, params: dict, run_cfg: dict) -> None:
+        """Injector-specific config checks, run at bind time before anything is
+        embedded and before any instance exists. `params` are this label's constructor
+        params; `run_cfg` holds the clean `model` and `revision`. Raise ValueError to
+        reject. Does nothing by default."""
+
     @abstractmethod
     def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState: ...
 

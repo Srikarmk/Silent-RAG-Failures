@@ -294,6 +294,10 @@ def test_labels_must_differ_beyond_case_and_spaces(label_injectors):
         runner.failure_params({"test_param": ENTRY, " TEST_PARAM ": stronger})
 
 
+def test_check_config_does_nothing_by_default():
+    assert ParamInjector.check_config({"strength": 2}, {"model": "m", "revision": None}) is None
+
+
 def test_run_checks_label_entries_before_any_work(label_injectors):
     def loader(name):
         raise AssertionError("should have failed before loading data")
