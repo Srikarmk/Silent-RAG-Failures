@@ -298,6 +298,64 @@ def test_check_config_does_nothing_by_default():
     assert ParamInjector.check_config({"strength": 2}, {"model": "m", "revision": None}) is None
 
 
+class CheckedInjector(ParamInjector):
+    name = "test_checked"
+    calls = []
+
+    @classmethod
+    def check_config(cls, params, run_cfg):
+        cls.calls.append((params, run_cfg))
+        if params.get("strength") == 0:
+            raise ValueError("strength must be positive")
+
+
+@pytest.fixture
+def checked(monkeypatch):
+    monkeypatch.setitem(INJECTORS, CheckedInjector.name, CheckedInjector)
+    monkeypatch.setattr(CheckedInjector, "calls", [])
+
+
+CHECKED = {"injector": CheckedInjector.name, "severities": [0.5]}
+
+
+def checked_cfg(failures, **extra):
+    return {"datasets": ["nfcorpus"], "failures": failures, "detectors": [], "window_size": 10, "trials": 1, **extra}
+
+
+def test_check_config_runs_once_per_label_before_any_data(checked):
+    loaded = []
+
+    def loader(name):
+        loaded.append(len(CheckedInjector.calls))
+        raise RuntimeError("loader reached")
+
+    cfg = checked_cfg({"a": {**CHECKED, "strength": 1}, "b": {**CHECKED, "strength": 2}}, model="fake")
+    with pytest.raises(RuntimeError, match="loader reached"):
+        runner.run(cfg, loader=loader, make_retriever=fake_retriever)
+    assert loaded == [2]
+    clean = {"model": "fake", "revision": None}
+    assert CheckedInjector.calls == [({"strength": 1}, clean), ({"strength": 2}, clean)]
+
+
+def test_check_config_value_error_names_the_label(checked):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    with pytest.raises(SystemExit, match=r"^weak: strength must be positive$"):
+        runner.run(checked_cfg({"weak": {**CHECKED, "strength": 0}}), loader=loader, make_retriever=fake_retriever)
+
+
+def test_check_config_gets_the_retrievers_model_when_config_has_none(checked):
+    def loader(name):
+        raise RuntimeError("loader reached")
+
+    cfg = checked_cfg({"a": CHECKED})
+    assert "model" not in cfg and "retriever" not in cfg
+    with pytest.raises(RuntimeError, match="loader reached"):
+        runner.run(cfg, loader=loader, make_retriever=lambda: Retriever("fake", revision="r1", encoder=HashEncoder()))
+    assert CheckedInjector.calls == [({}, {"model": "fake", "revision": "r1"})]
+
+
 def test_run_checks_label_entries_before_any_work(label_injectors):
     def loader(name):
         raise AssertionError("should have failed before loading data")

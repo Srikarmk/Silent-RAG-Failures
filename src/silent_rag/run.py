@@ -157,6 +157,15 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
     return parsed
 
 
+def check_injectors(failures: dict, run_cfg: dict) -> None:
+    """Each label's injector-specific checks (Injector.check_config), on what failure_params returns."""
+    for label, (name, _, params) in failures.items():
+        try:
+            INJECTORS[name].check_config(dict(params), run_cfg)
+        except ValueError as e:
+            raise SystemExit(f"{label}: {e}") from None
+
+
 def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
     if damaged.query_embeddings is None:
         return retriever.embed_queries([damaged.query_texts[i] for i in idx])
@@ -328,6 +337,9 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
         except TypeError as e:
             raise SystemExit(f"bad parameters for {name}: {e}") from None
     make_retriever = make_retriever or (lambda: Retriever(cfg["model"], **cfg.get("retriever", {})))
+    # the clean model and revision the run really uses; building a Retriever doesn't load the model
+    clean = make_retriever().config
+    check_injectors(failures, {"model": clean["model"], "revision": clean["revision"]})
     # one run_id for all seeds, so the replicates can be grouped together
     hashed = {**DEFAULTS, **cfg}
     if "seeds" in cfg:
