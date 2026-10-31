@@ -220,10 +220,21 @@ class OtherInjector(Injector):
         return state
 
 
+class RequiredInjector(Injector):
+    name = "test_required"
+
+    def __init__(self, level):
+        self.level = level
+
+    def apply(self, state, severity, seed):
+        return state
+
+
 @pytest.fixture
 def label_injectors(monkeypatch):
     monkeypatch.setitem(INJECTORS, ParamInjector.name, ParamInjector)
     monkeypatch.setitem(INJECTORS, OtherInjector.name, OtherInjector)
+    monkeypatch.setitem(INJECTORS, RequiredInjector.name, RequiredInjector)
 
 
 def test_failure_params_accepts_list_and_label_forms(label_injectors):
@@ -262,6 +273,14 @@ ENTRY = {"injector": "test_param", "severities": [0.5]}
     pytest.param({"x": {"injector": "test_param", "severities": [1.5]}}, r"in \(0, 1\]", id="severity-out-of-range"),
     pytest.param({"a": ENTRY, "b": ENTRY}, "same parameters", id="same-params-twice"),
     pytest.param({"test_param": [0.5], "b": ENTRY}, "same parameters", id="same-params-as-list-form"),
+    pytest.param({"test_required": [0.5]}, r"test_required: bad parameters for test_required, given \[\]: missing",
+                 id="list-form-needs-params"),
+    pytest.param({"x": {"injector": "test_required", "severities": [0.5]}}, r"x: .* given \[\]: missing .*'level'",
+                 id="param-missing"),
+    pytest.param({"x": {"injector": "test_required", "severities": [0.5], "levle": 2}},
+                 r"x: .* given \['levle'\]: missing .*'level'", id="param-misspelled"),
+    pytest.param({"x": {"injector": "test_other", "severities": [0.5], "strength": 2}},
+                 r"x: .* given \['strength'\]: got an unexpected keyword argument 'strength'", id="param-not-taken"),
 ])
 def test_failure_params_rejects_bad_entries(label_injectors, failures, match):
     with pytest.raises(SystemExit, match=match):

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import inspect
 import json
 import pkgutil
 import time
@@ -144,6 +145,11 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
         if key in others:
             raise SystemExit(f"{label}: is the registered name of {others[key]!r}, pick another label")
         check_severities({label: sevs})
+        # bind, don't construct: the runner makes exactly one injector per label, later
+        try:
+            inspect.signature(INJECTORS[name]).bind(**params)
+        except TypeError as e:
+            raise SystemExit(f"{label}: bad parameters for {name}, given {sorted(params)}: {e}") from None
         for prev, (prev_name, _, prev_params) in parsed.items():
             if prev_name == name and prev_params == params:
                 raise SystemExit(f"{label} and {prev} run {name} with the same parameters")
