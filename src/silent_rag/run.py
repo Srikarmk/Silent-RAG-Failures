@@ -166,6 +166,16 @@ def check_injectors(failures: dict, run_cfg: dict) -> None:
             raise SystemExit(f"{label}: {e}") from None
 
 
+def default_retriever(cfg: dict) -> Retriever:
+    return Retriever(cfg["model"], **cfg.get("retriever", {}))
+
+
+def injector_run_cfg(retriever) -> dict:
+    """What Injector.check_config gets: the clean model and revision the run really uses."""
+    c = retriever.config
+    return {"model": c["model"], "revision": c["revision"]}
+
+
 def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
     if damaged.query_embeddings is None:
         return retriever.embed_queries([damaged.query_texts[i] for i in idx])
@@ -336,10 +346,9 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
             cls(**params[name])  # catch a typo'd parameter now, not after embedding the corpus
         except TypeError as e:
             raise SystemExit(f"bad parameters for {name}: {e}") from None
-    make_retriever = make_retriever or (lambda: Retriever(cfg["model"], **cfg.get("retriever", {})))
-    # the clean model and revision the run really uses; building a Retriever doesn't load the model
-    clean = make_retriever().config
-    check_injectors(failures, {"model": clean["model"], "revision": clean["revision"]})
+    make_retriever = make_retriever or (lambda: default_retriever(cfg))
+    # building a Retriever doesn't load the model
+    check_injectors(failures, injector_run_cfg(make_retriever()))
     # one run_id for all seeds, so the replicates can be grouped together
     hashed = {**DEFAULTS, **cfg}
     if "seeds" in cfg:
