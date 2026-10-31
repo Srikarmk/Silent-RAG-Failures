@@ -26,6 +26,13 @@ def test_configs_are_valid(path):
     assert cfg["window_size"] > 0 and cfg["trials"] > 0
 
 
+@pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
+def test_configs_pass_injector_checks(path):
+    """The real configs get past every injector's check_config, with the run_cfg run() builds."""
+    cfg, failures = load(path)
+    runner.check_injectors(failures, runner.injector_run_cfg(runner.default_retriever(cfg)))
+
+
 def test_dev_and_final_run_the_same_f1():
     """The held-out run has to damage the index the same way the dev run does.
     Severity grids may differ, so only the injector and its params are compared."""
@@ -64,7 +71,7 @@ def test_list_prints_registries(monkeypatch, capsys):
 
 def test_dev_and_final_use_the_same_retriever():
     """Whatever we tune on NFCorpus has to be what runs on the held-out sets."""
-    dev, final = (yaml.safe_load((CONFIGS[0].parent / f"{n}.yaml").read_text()) for n in ("dev", "final"))
+    dev, final = (load(CONFIGS[0].parent / f"{n}.yaml")[0] for n in ("dev", "final"))
     for key in ("model", "retriever", "window_size"):
         assert dev[key] == final[key], key
     assert dev["retriever"]["max_seq_length"] == 256
