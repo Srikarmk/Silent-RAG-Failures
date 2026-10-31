@@ -12,12 +12,30 @@ from silent_rag.inject.base import Injector
 CONFIGS = sorted((Path(__file__).parents[1] / "configs").glob("*.yaml"))
 
 
+def load(path):
+    """Parse a config the way main() and run() do."""
+    runner.load_plugins()
+    cfg = yaml.load(path.read_text(), Loader=runner.UniqueKeyLoader)
+    return cfg, runner.failure_params(cfg.get("failures"))
+
+
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
 def test_configs_are_valid(path):
-    cfg = yaml.safe_load(path.read_text())
+    cfg, _ = load(path)
     runner.check_datasets(cfg["datasets"], final=True)
-    runner.check_severities(cfg.get("failures") or {})
     assert cfg["window_size"] > 0 and cfg["trials"] > 0
+
+
+def test_dev_and_final_run_the_same_f1():
+    """The held-out run has to damage the index the same way the dev run does.
+    Severity grids may differ, so only the injector and its params are compared."""
+    dev, final = (
+        {label: (name, params) for label, (name, _, params) in load(CONFIGS[0].parent / f"{n}.yaml")[1].items()
+         if name == "F1_partial_upgrade"}
+        for n in ("dev", "final")
+    )
+    assert set(dev) == {"F1_partial_upgrade_minilm", "F1_partial_upgrade_bge"}
+    assert dev == final
 
 
 def test_list_prints_registries(monkeypatch, capsys):
