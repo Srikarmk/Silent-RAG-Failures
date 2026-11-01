@@ -167,6 +167,15 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
     return parsed
 
 
+def check_score_depth(cfg: dict) -> None:
+    """score_depth is optional; when set it has to reach at least as deep as k."""
+    depth, k = cfg.get("score_depth"), cfg.get("k", DEFAULTS["k"])
+    if depth is None:
+        return
+    if not isinstance(depth, int) or isinstance(depth, bool) or depth < k:
+        raise SystemExit(f"score_depth must be an integer >= k ({k}), got {depth!r}")
+
+
 def check_injectors(failures: dict, run_cfg: dict) -> None:
     """Each label's injector-specific checks (Injector.check_config), on what failure_params returns."""
     for label, (name, _, params) in failures.items():
@@ -222,7 +231,7 @@ def doc_tuples(state):
     return tuple(state.doc_ids), tuple(state.doc_texts), parents
 
 
-def observe(state, idx, topk_ids, topk_scores, query_embeddings, docs=None) -> Observation:
+def observe(state, idx, topk_ids, topk_scores, query_embeddings, docs=None, deep_scores=None) -> Observation:
     """docs: doc_tuples(state), pass it in to avoid re-copying a big corpus every window."""
     doc_ids, doc_texts, parent_ids = docs or doc_tuples(state)
     return Observation(
@@ -235,6 +244,7 @@ def observe(state, idx, topk_ids, topk_scores, query_embeddings, docs=None) -> O
         doc_texts=doc_texts,
         doc_embeddings=state.doc_embeddings,
         parent_ids=parent_ids,
+        deep_scores=None if deep_scores is None else frozen(deep_scores),
     )
 
 
@@ -261,6 +271,17 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
     state = read_only(retriever.embed_corpus(ds))
     clean_docs = doc_tuples(state)
     clean_ids, clean_scores, clean_q = retriever.search(state, k=k, query_embeddings=state.query_embeddings)
+
+    depth = cfg.get("score_depth")
+    if depth is not None and depth > len(set(state.parent_ids or state.doc_ids)):
+        raise SystemExit(f"{ds.name}: score_depth {depth} is deeper than the index")
+
+    def deep(st, q_emb):
+        # a separate search, so topk_ids and nDCG@k are exactly what they are without score_depth
+        # (a deeper search can break score ties at rank k differently)
+        return None if depth is None else retriever.search(st, k=depth, query_embeddings=q_emb)[1]
+
+    clean_deep = deep(state, clean_q)
     clean_ndcg = per_query_ndcg(clean_ids, state.query_ids, ds.qrels, k)
 
     # The reference window the detectors are fit on never overlaps the windows they score.
@@ -270,7 +291,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
         raise SystemExit(f"{ds.name}: {len(order)} queries is too few for two windows of {window_size}")
 
     reference = observe(
-        state, ref_idx, [clean_ids[i] for i in ref_idx], clean_scores[ref_idx], clean_q[ref_idx], clean_docs
+        state, ref_idx, [clean_ids[i] for i in ref_idx], clean_scores[ref_idx], clean_q[ref_idx], clean_docs,
+        None if clean_deep is None else clean_deep[ref_idx],
     )
     fitted = {}
     for name, cls in detectors.items():
@@ -295,6 +317,7 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                 damaged = state
                 topk_ids = [clean_ids[i] for i in idx]
                 topk_scores, q_emb = clean_scores[idx], clean_q[idx]
+                deep_scores = None if clean_deep is None else clean_deep[idx]
             else:
                 damaged = read_only(injector.apply(state, severity, seed=injector_seed(seed, trial)))
                 if len(damaged.query_ids) != len(state.query_ids):
@@ -302,11 +325,14 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                 topk_ids, topk_scores, q_emb = retriever.search(
                     damaged, k=k, query_embeddings=window_queries(retriever, state, damaged, idx)
                 )
+                deep_scores = deep(damaged, q_emb)
 
             # qrels are keyed by the clean query ids. What this means for F4 is still open (#13).
             ndcg = per_query_ndcg(topk_ids, [state.query_ids[i] for i in idx], ds.qrels, k)
             drop, p = paired_bootstrap(clean_ndcg[idx], ndcg, seed=trial)
-            window = observe(damaged, idx, topk_ids, topk_scores, q_emb, docs_of(damaged, state, clean_docs))
+            window = observe(
+                damaged, idx, topk_ids, topk_scores, q_emb, docs_of(damaged, state, clean_docs), deep_scores
+            )
 
             for name, det in fitted.items():
                 start = time.perf_counter()
@@ -364,6 +390,7 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     # building a Retriever doesn't load the model
     run_cfg = injector_run_cfg(make_retriever())
     check_injectors(failures, run_cfg)
+    check_score_depth(cfg)
     check_final_revision(run_cfg, final)
     # one run_id for all seeds, so the replicates can be grouped together
     hashed = {**DEFAULTS, **cfg}

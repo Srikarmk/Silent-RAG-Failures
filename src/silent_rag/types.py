@@ -61,3 +61,6 @@ class Observation:
     doc_texts: list[str] | None = None
     doc_embeddings: np.ndarray | None = None
     parent_ids: list[str] | None = None  # doc id per row when chunked; topk_ids are always parent docs
+    # (n_queries, score_depth), high to low, only when the config sets score_depth; for
+    # score-based detectors that want more than the top k. Ground truth stays at k.
+    deep_scores: np.ndarray | None = None

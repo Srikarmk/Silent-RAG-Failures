@@ -193,6 +193,7 @@ window_size: 100
 trials: 20
 seeds: [0, 1, 2]                           # repeats the whole run (windows, reference window, damage) under one run_id
 # optional, with defaults: k: 10, alpha: 0.05, min_drop: 0.0
+# score_depth: 100 also logs each query's top 100 scores as Observation.deep_scores (ground truth stays at k)
 # seed: 0 instead of seeds runs once
 ```
 
@@ -239,7 +240,7 @@ class MyDetector(Detector):
         return float(self.ref - window.topk_scores[:, 0].mean())
 ```
 
-An `Observation` holds what a production system could log (query ids, texts and embeddings, top-k ids and scores, the index rows with their ids and texts) and deliberately no qrels. Treat it as read-only. A detector that needs to re-embed overrides `attach(retriever)`, which gets the clean retriever. The runner makes a fresh detector for each dataset and seed and calls `attach` once, just before `fit()`. New modules in `inject/` and `detect/` are picked up automatically.
+An `Observation` holds what a production system could log (query ids, texts and embeddings, top-k ids and scores, the index rows with their ids and texts, and with `score_depth` set, each query's deeper score list in `deep_scores`) and deliberately no qrels. Treat it as read-only. A detector that needs to re-embed overrides `attach(retriever)`, which gets the clean retriever. The runner makes a fresh detector for each dataset and seed and calls `attach` once, just before `fit()`. New modules in `inject/` and `detect/` are picked up automatically.
 
 ## Repository
 
