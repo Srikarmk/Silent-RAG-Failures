@@ -118,6 +118,7 @@ input[type=range] { flex: 1; accent-color: var(--accent); height: 28px; cursor: 
 .tag--bad { background: rgba(239,118,118,.15); color: var(--bad); }
 
 .cols { display: grid; grid-template-columns: 6fr 5fr; gap: 48px; }
+.cols--results { grid-template-columns: 4fr 7fr; }
 .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .list li { display: grid; grid-template-columns: 2.5em 1fr; gap: 12px; padding: 12px 16px; background: var(--surface); border-radius: var(--radius); }
 .list__id { color: var(--accent); font-weight: 500; font-variant-numeric: tabular-nums; }

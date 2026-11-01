@@ -1,4 +1,5 @@
 import summary from "@/data/summary.json";
+import results from "@/data/benchmark.json";
 import Monitor from "@/components/Monitor";
 import IndexMap from "@/components/IndexMap";
 import QueryExplorer from "@/components/QueryExplorer";
@@ -18,7 +19,7 @@ const steps = [
   {
     title: "Break the index",
     text: "Inject one failure at a set severity, here F1 at 30%.",
-    rows: [["Failure", "F1, 30%"], ["Swapped", "1,089 of 3,633"]],
+    rows: [["Failure", "F1, 30%"], ["Swapped", "1,090 of 3,633"]],
     tag: ["damaged", "warn"],
   },
   {
@@ -44,18 +45,23 @@ const failures = [
 ];
 
 const detectors = [
-  ["Re-embedding check", "Re-encodes a sample of documents and compares them with the stored vectors", "AUROC 1.000", "Built"],
-  ["Retrieved-document classifier", "Separates retrieved documents from the reference window’s", "AUROC 0.907", "Built"],
-  ["Query classifier", "Same test on query embeddings; F1 leaves queries alone, so it should not fire", "AUROC 0.510", "Built"],
-  ["PSI and KS", "Distribution shift in retrieval scores such as the top-1 similarity", "–", "Nov 11"],
-  ["MMD", "Two-sample test on query and document embeddings", "–", "Nov 11"],
-  ["Canary queries", "Fixed probe queries whose answers are known", "–", "Nov 18"],
-  ["LLM judge", "An LLM rates the retrieved passages, with cost per check", "–", "Nov 18"],
+  ["Re-embedding check", "Re-encodes a sample of documents and compares them with the stored vectors", "Benchmarked"],
+  ["KS on top-1 score", "Two-sample KS test on each query’s best retrieval score against the reference window", "Benchmarked"],
+  ["Retrieved-document classifier", "Separates retrieved documents from the reference window’s", "Built"],
+  ["Query classifier", "Same test on query embeddings; F1 leaves queries alone, so it should not fire", "Built"],
+  ["PSI", "Distribution shift in binned retrieval scores", "Nov 11"],
+  ["MMD", "Two-sample test on query and document embeddings", "Nov 11"],
+  ["Canary queries", "Fixed probe queries whose answers are known", "Nov 18"],
+  ["LLM judge", "An LLM rates the retrieved passages, with cost per check", "Nov 18"],
 ];
+
+const detectorNames = { re_embed: "Re-embedding check", ks_top1: "KS on top-1 score" };
+const modelNames = { "sentence-transformers/all-MiniLM-L6-v2": "all-MiniLM", "BAAI/bge-small-en-v1.5": "bge-small" };
+const pct0 = (v) => `${Math.round(v * 100)}%`;
 
 const milestones = [
   ["Oct 18", "Baseline: model, truncation, clean CIs", "Done", "done"],
-  ["Oct 31", "Failure injection: F1–F5 and negative controls", "In progress", "now"],
+  ["Oct 31", "Failure injection: F1 done; F2–F5 and negative controls next", "In progress", "now"],
   ["Nov 11", "Drift and score-based detectors, tuned on NFCorpus", "Next", ""],
   ["Nov 18", "Canary queries, re-embedding, LLM judge, cost per check", "Planned", ""],
   ["Nov 24", "Held-out run on SciFact and FiQA, detector heatmap", "Planned", ""],
@@ -75,6 +81,7 @@ export default function Page() {
             <a href="#how">How it works</a>
             <a href="#failures">Failures</a>
             <a href="#detectors">Detectors</a>
+            <a href="#results">Results</a>
             <a href="#status">Status</a>
             <a className="bar__cta" href={REPO}>GitHub</a>
           </nav>
@@ -90,8 +97,8 @@ export default function Page() {
           </p>
           <Monitor levels={summary.levels} examples={summary.examples.slice(0, 3)} />
           <p className="note">
-            Real NFCorpus numbers from a prototype of F1: part of the index re-embedded with
-            all-MiniLM-L6-v2 while queries stay on multi-qa-MiniLM-L6-cos-v1.
+            Real NFCorpus numbers from the benchmark’s F1 injector: part of the index re-embedded
+            with all-MiniLM-L6-v2 while queries stay on multi-qa-MiniLM-L6-cos-v1.
           </p>
         </section>
 
@@ -166,24 +173,78 @@ export default function Page() {
 
         <Reveal as="section" className="section" id="detectors" aria-labelledby="detectors-title">
           <h2 id="detectors-title">Detectors</h2>
-          <p className="section__lead">Each one sees only what a production system logs. Results so far are from the prototype F1 run.</p>
+          <p className="section__lead">Each one sees only what a production system logs.</p>
           <div className="table-wrap">
             <table className="table">
               <thead>
-                <tr><th scope="col">Detector</th><th scope="col">Signal</th><th scope="col">Prototype F1</th><th scope="col">Status</th></tr>
+                <tr><th scope="col">Detector</th><th scope="col">Signal</th><th scope="col">Status</th></tr>
               </thead>
               <tbody>
-                {detectors.map(([name, signal, result, status]) => (
+                {detectors.map(([name, signal, status]) => (
                   <tr key={name}>
                     <td className="table__name">{name}</td>
                     <td className="muted">{signal}</td>
-                    <td className="num">{result}</td>
-                    <td className={status === "Built" ? "good" : "muted"}>{status}</td>
+                    <td className={status.startsWith("Nov") ? "muted" : "good"}>{status}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+        </Reveal>
+
+        <Reveal as="section" className="section" id="results" aria-labelledby="results-title">
+          <h2 id="results-title">First benchmark run</h2>
+          <p className="section__lead">
+            NFCorpus with F1 at two strengths: the index partly re-embedded with a close relative of
+            the index model (all-MiniLM-L6-v2) or an unrelated one (bge-small-en-v1.5).{" "}
+            {results.seeds.length} seeds × {results.trials} windows of {results.window} queries per severity.
+          </p>
+          <div className="cols cols--results">
+            <div className="table-wrap">
+              <table className="table table--compact">
+                <caption>Mean nDCG@10 drop, with the share of windows the bootstrap calls harmful</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Severity</th>
+                    {results.failures.map((f) => <th scope="col" key={f.label}>{modelNames[f.alt_model] || f.alt_model}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.failures[0].levels.map((l, i) => (
+                    <tr key={l.severity}>
+                      <td className="num">{pct0(l.severity)}</td>
+                      {results.failures.map((f) => (
+                        <td className="num" key={f.label}>{f3(f.levels[i].drop)} <span className="muted">({pct0(f.levels[i].harmful)})</span></td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="table-wrap">
+              <table className="table table--compact">
+                <caption>Detectors: AUROC with 95% CI, and harmful windows caught at {results.failures[0].levels.map((l) => pct0(l.severity)).join(" / ")}</caption>
+                <thead>
+                  <tr><th scope="col">Detector</th><th scope="col">Replacement</th><th scope="col">AUROC</th><th scope="col">Caught</th></tr>
+                </thead>
+                <tbody>
+                  {results.detectors.map((d) => (
+                    <tr key={d.detector + d.label}>
+                      <td>{detectorNames[d.detector] || d.detector}</td>
+                      <td className="muted">{modelNames[results.failures.find((f) => f.label === d.label).alt_model]}</td>
+                      <td className="num">{f3(d.auroc)} <span className="muted">[{f3(d.ci[0])}–{f3(d.ci[1])}]</span></td>
+                      <td className="num">{d.caught.map(pct0).join(" / ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <p className="note">
+            Each detector’s threshold is its highest score on clean windows, so no clean window raises
+            an alarm. The re-embedding check flags every changed vector, harmful or not; the harmless
+            controls still to come will show what that costs.
+          </p>
         </Reveal>
 
         <Reveal as="section" className="section split split--chart" aria-labelledby="drop-title">

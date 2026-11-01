@@ -1,28 +1,32 @@
-# Builds the project page's data from a real NFCorpus run with a prototype F1
-# (part of the index re-embedded with all-MiniLM-L6-v2, queries left on the baseline model).
-# Usage, from the repo root: python site/scripts/make_data.py
+# Builds the project page's data on NFCorpus with the real F1 injector, using the
+# all-MiniLM-L6-v2 entry and retriever settings from configs/dev.yaml.
+# Usage, from the repo root:
+#   python site/scripts/make_data.py [results.parquet]
 # Writes site/data/summary.json (bundled into the page) and site/public/data/{map,queries}.json
-# (fetched by the browser).
-import dataclasses, json, sys
+# (fetched by the browser). With a results parquet from `python -m silent_rag.run --config
+# configs/dev.yaml`, it also writes site/data/benchmark.json, the benchmark tables on the page.
+import json, sys
 import numpy as np
+import yaml
 from datasets import load_dataset
-from sentence_transformers import SentenceTransformer
 from silent_rag.data import load, SOURCES
+from silent_rag.inject.f1_partial_upgrade import PartialUpgrade
 from silent_rag.pipeline import Retriever
 from silent_rag.eval.ground_truth import per_query_ndcg, paired_bootstrap
 
+cfg = yaml.safe_load(open("configs/dev.yaml"))
+f1 = {k: v for k, v in cfg["failures"]["F1_partial_upgrade_minilm"].items() if k.startswith("alt_")}
 ds = load("nfcorpus")
-r = Retriever("sentence-transformers/multi-qa-MiniLM-L6-cos-v1",
-              revision="b207367332321f8e44f96e224ef15bc607f4dbf0", max_seq_length=256)
+r = Retriever(cfg["model"], **cfg["retriever"])
 state = r.embed_corpus(ds)
 qids = list(ds.queries); qtexts = [ds.queries[q] for q in qids]
 qemb = r.embed_queries(qtexts)
-alt = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu").encode(
-    state.doc_texts, normalize_embeddings=True, batch_size=32).astype(np.float32)
+inj = PartialUpgrade(**f1)
+inj.attach(r, state)
+alt = inj.alt_embeddings
 src = SOURCES["nfcorpus"]
 titles = {str(d["_id"]): d["title"] for d in load_dataset(src["repo"], "corpus", split="corpus", revision=src["revision"])}
 
-order = np.random.default_rng(0).permutation(len(state.doc_ids))  # nested: higher severity swaps a superset
 sevs = [round(0.1 * i, 1) for i in range(10)]
 sample = np.random.default_rng(2).choice(len(state.doc_ids), 200, replace=False)
 rng = np.random.default_rng(1)
@@ -31,10 +35,9 @@ out = {"n_docs": len(state.doc_ids), "n_queries": len(qids), "levels": []}
 clean_nd = None
 per_q = {}
 for s in sevs:
-    emb = state.doc_embeddings.copy()
-    rows = order[: int(s * len(order))]
-    emb[rows] = alt[rows]
-    st = dataclasses.replace(state, doc_embeddings=emb)
+    # one seed for every severity, so higher severities upgrade a superset of rows
+    st = inj.apply(state, s, seed=0) if s else state
+    rows = np.flatnonzero((st.doc_embeddings != state.doc_embeddings).any(1))
     ids, scores, _ = r.search(st, k=10, query_embeddings=qemb)
     nd = per_query_ndcg(ids, qids, ds.qrels)
     if clean_nd is None: clean_nd = nd
@@ -88,3 +91,31 @@ dump({k: out[k] for k in ("n_docs", "n_queries", "levels", "examples")} | {"map_
      "site/data/summary.json")
 dump(out["map"], "site/public/data/map.json")
 dump(out["all"], "site/public/data/queries.json")
+
+# benchmark tables from a runner results parquet: damage per F1 variant and severity, and per
+# detector the AUROC (seed-block CI) and the share of harmful windows caught at each severity,
+# with the threshold at the detector's highest score on clean windows (no clean window alarms)
+if len(sys.argv) > 1:
+    import pandas as pd
+    from silent_rag.eval.detector_scoring import bootstrap_auroc_ci, severity_detection_table
+    df = pd.read_parquet(sys.argv[1])
+    labels = [f for f in cfg["failures"] if f in set(df.failure)]
+    win = df.drop_duplicates(["failure", "severity", "seed", "trial"])
+    res = {"run_id": df.run_id.iloc[0], "seeds": sorted(int(s) for s in df.seed.unique()),
+           "trials": int(df.trial.nunique()), "window": int(df.window_size.iloc[0]),
+           "failures": [], "detectors": []}
+    for f in labels:
+        w = win[win.failure == f]
+        res["failures"].append({"label": f, "alt_model": cfg["failures"][f]["alt_model"], "levels": [
+            {"severity": float(s), "drop": round(float(g.ndcg_drop.mean()), 3),
+             "harmful": round(float(g.harmful.mean()), 2)} for s, g in w.groupby("severity")]})
+    for det in cfg["detectors"]:
+        thr = df[(df.detector == det) & (df.failure == "clean")].score.max()
+        for f in labels:
+            auc, lo, hi = bootstrap_auroc_ci(df, det, f)
+            t = severity_detection_table(df, det, f, thr)
+            res["detectors"].append({"detector": det, "label": f, "auroc": round(auc, 3),
+                                     "ci": [round(lo, 3), round(hi, 3)],
+                                     "caught": [round(float(v), 2) for v in t.tpr_when_harmful]})
+    dump(res, "site/data/benchmark.json")
+    print(json.dumps(res, indent=1), file=sys.stderr)
