@@ -22,7 +22,9 @@ def obs(top1, seed=0):
 
 
 def test_registered_under_the_dev_config_name():
-    assert REGISTRY["ks_top1"] is KSTop1
+    # by name, not identity: reloading the module (test_psi does) makes new classes
+    assert REGISTRY["ks_top1"].__qualname__ == KSTop1.__qualname__ == "KS_top1"
+    assert REGISTRY["ks_top1"].feature == "top1"
 
 
 def test_same_distribution_scores_low_shift_scores_high():
@@ -53,13 +55,13 @@ class NoisyDocs(Injector):
         return dataclasses.replace(state, doc_embeddings=emb.astype(np.float32))
 
 
-def run_toy(monkeypatch, failure):
+def run_toy(monkeypatch, failure, detector="ks_top1"):
     for inj in (ScrambleDocs, NoisyDocs):
         monkeypatch.setitem(INJECTORS, inj.name, inj)
     cfg = {
         "datasets": ["nfcorpus"],
         "failures": {failure: [0.5]},
-        "detectors": ["ks_top1"],
+        "detectors": [detector],
         "window_size": 15,
         "trials": 4,
         "seed": 0,
@@ -67,7 +69,7 @@ def run_toy(monkeypatch, failure):
     df = runner.run(
         cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=HashEncoder())
     )
-    assert (df.detector == "ks_top1").all() and df.score.between(0, 1).all()
+    assert (df.detector == detector).all() and np.isfinite(df.score).all() and (df.score >= 0).all()
     return df.groupby("failure").score.mean()
 
 

@@ -17,9 +17,12 @@ features don't change if we start logging more scores later.
 
 from __future__ import annotations
 
+from abc import abstractmethod
+
 import numpy as np
 import pandas as pd
 
+from silent_rag.detect.base import Detector, register
 from silent_rag.types import Observation
 
 DEPTH = 10
@@ -50,3 +53,33 @@ def score_features(obs: Observation) -> pd.DataFrame:
         },
         index=pd.Index(list(obs.query_ids), name="query_id"),
     )[FEATURES]
+
+
+class FeatureDrift(Detector):
+    """Compares one score feature's distribution in a window to the reference window.
+
+    Subclasses set `compare(reference_values, window_values)`, and
+    `register_per_feature` turns them into one registered detector per feature.
+    """
+
+    feature: str
+
+    def fit(self, reference: Observation) -> None:
+        self.reference_ = score_features(reference)[self.feature].to_numpy()
+
+    def score(self, window: Observation) -> float:
+        if not hasattr(self, "reference_"):
+            raise RuntimeError(f"{self.name} needs fit(reference) before it can score")
+        return float(self.compare(self.reference_, score_features(window)[self.feature].to_numpy()))
+
+    @abstractmethod
+    def compare(self, reference: np.ndarray, current: np.ndarray) -> float: ...
+
+
+def register_per_feature(base: type[FeatureDrift], prefix: str) -> dict[str, type[FeatureDrift]]:
+    """One registered subclass of `base` per feature, named `<prefix>_<feature>`."""
+    made = {}
+    for feature in FEATURES:
+        attrs = {"name": f"{prefix}_{feature}", "feature": feature, "__module__": base.__module__}
+        made[feature] = register(type(f"{base.__name__}_{feature}", (base,), attrs))
+    return made
