@@ -65,13 +65,19 @@ def test_bad_parameters_are_rejected(kw):
         ReEmbed(**kw)
 
 
-def test_config_mistakes_fail_before_any_work():
+def test_config_mistakes_fail_before_any_work(monkeypatch):
     def loader(name):
         raise AssertionError("should have failed before loading data")
 
-    for detectors in ([{"re_embed": {"samples": 50}}], [{"re_embed": 50}], ["re_embed", {"re_embed": {"sample": 5}}]):
-        cfg = {"datasets": ["nfcorpus"], "detectors": detectors, "window_size": 10, "trials": 1}
-        with pytest.raises(SystemExit):
+    monkeypatch.setitem(runner.INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    for detectors, match in [
+        ([{"re_embed": {"samples": 50}}], "bad parameters for re_embed: .*'samples'"),
+        ([{"re_embed": 50}], "parameters for re_embed must be a mapping"),
+        (["re_embed", {"re_embed": {"sample": 5}}], "re_embed is listed twice"),
+    ]:
+        cfg = {"datasets": ["nfcorpus"], "failures": {ScrambleDocs.name: [0.5]}, "detectors": detectors,
+               "window_size": 10, "trials": 1}
+        with pytest.raises(SystemExit, match=match):
             runner.run(cfg, loader=loader)
 
 

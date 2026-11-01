@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import inspect
 import json
 import pkgutil
 import time
@@ -22,7 +23,7 @@ from silent_rag.detect.base import REGISTRY as DETECTORS
 from silent_rag.eval.ground_truth import paired_bootstrap, per_query_ndcg
 from silent_rag.eval.results import ResultRow, to_frame
 from silent_rag.inject.base import REGISTRY as INJECTORS
-from silent_rag.pipeline import Retriever
+from silent_rag.pipeline import Retriever, is_commit_hash
 from silent_rag.types import Observation
 
 # filled in before anything reads the config, so run_id doesn't depend on whether a default was spelled out
@@ -54,6 +55,16 @@ def check_datasets(datasets: list[str], final: bool) -> list[str]:
             "only for the real evaluation run."
         )
     return names
+
+
+def check_final_revision(run_cfg: dict, final: bool) -> None:
+    """Held-out numbers have to be reproducible, so --final needs the clean model pinned
+    to a commit, not whatever the Hub serves that day. Dev runs may leave it unpinned."""
+    if final and not is_commit_hash(run_cfg["revision"]):
+        raise SystemExit(
+            "--final needs the clean model's revision pinned to a 40-character lowercase "
+            f"commit hash, got {run_cfg['revision']!r}"
+        )
 
 
 def load_plugins() -> None:
@@ -103,6 +114,80 @@ def check_severities(failures: dict) -> None:
     bad = {f: s for f, sevs in failures.items() for s in sevs if not ok(s)}
     if bad:
         raise SystemExit(f"severity is the fraction affected and has to be in (0, 1], got {bad}")
+
+
+def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
+    """label -> (injector name, severities, constructor params).
+
+    configs give `label: {injector: name, severities: [...], param: value}`, or the
+    older `name: [severities]`, where the label is the injector name and there are no params.
+    """
+    if not failures:
+        raise SystemExit(f"failures must list at least one failure (it is missing, null or empty), got {failures!r}")
+    if not isinstance(failures, dict):
+        raise SystemExit(f"failures must be a mapping of label to entry, got {failures!r}")
+    parsed, keys = {}, {}
+    for label, entry in failures.items():
+        if not isinstance(label, str) or not label.strip():
+            raise SystemExit(f"failure labels must be non-blank strings, got {label!r}")
+        key = label.strip().casefold()
+        if key == "clean":
+            raise SystemExit(f"{label!r}: 'clean' is the undamaged condition, pick another label")
+        if key in keys:
+            raise SystemExit(f"{label!r} and {keys[key]!r} differ only in case or spaces, pick distinct labels")
+        keys[key] = label
+        if isinstance(entry, list):
+            name, sevs, params = label, entry, {}
+        elif isinstance(entry, dict):
+            params = dict(entry)
+            name = params.pop("injector", None)
+            if not isinstance(name, str) or not name.strip():
+                raise SystemExit(f"{label}: needs `injector:` naming a registered injector, got {name!r}")
+            if "severities" not in params:
+                raise SystemExit(f"{label}: needs `severities: [...]`")
+            sevs = params.pop("severities")
+        else:
+            raise SystemExit(f"{label}: expected [severities] or {{injector: name, severities: [...]}}, got {entry!r}")
+        if name not in INJECTORS:
+            raise SystemExit(f"{label}: no injector registered as {name!r}, available: {sorted(INJECTORS)}")
+        # a label may be its own injector's name, never another one's, or the results table is ambiguous
+        others = {n.casefold(): n for n in INJECTORS if n != name}
+        if key in others:
+            raise SystemExit(f"{label}: is the registered name of {others[key]!r}, pick another label")
+        check_severities({label: sevs})
+        # bind, don't construct: the runner makes exactly one injector per label, later
+        try:
+            inspect.signature(INJECTORS[name]).bind(**params)
+        except TypeError as e:
+            raise SystemExit(f"{label}: bad parameters for {name}, given {sorted(params)}: {e}") from None
+        for prev, (prev_name, _, prev_params) in parsed.items():
+            if prev_name == name and prev_params == params:
+                raise SystemExit(f"{label} and {prev} run {name} with the same parameters")
+        parsed[label] = (name, sevs, params)
+    return parsed
+
+
+def check_injectors(failures: dict, run_cfg: dict) -> None:
+    """Each label's injector-specific checks (Injector.check_config), on what failure_params returns."""
+    for label, (name, _, params) in failures.items():
+        try:
+            INJECTORS[name].check_config(dict(params), run_cfg)
+        except ValueError as e:
+            raise SystemExit(f"{label}: {e}") from None
+
+
+def default_retriever(cfg: dict) -> Retriever:
+    model = cfg.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise SystemExit(f"config needs model: <sentence-transformers name>, got {model!r}")
+    # an empty `retriever:` block parses as null; treat it like no settings
+    return Retriever(model, **(cfg.get("retriever") or {}))
+
+
+def injector_run_cfg(retriever) -> dict:
+    """What Injector.check_config gets: the clean model and revision the run really uses."""
+    c = retriever.config
+    return {"model": c["model"], "revision": c["revision"]}
 
 
 def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
@@ -164,13 +249,12 @@ def injector_seed(seed: int, trial: int) -> int:
     return int(np.random.SeedSequence([seed, trial]).generate_state(1)[0])
 
 
-def run_dataset(ds, retriever, cfg, rid: str | None = None) -> list[ResultRow]:
+def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> list[ResultRow]:
+    """failures: what failure_params returns, label -> (injector name, severities, params)."""
     cfg = {**DEFAULTS, **cfg}
     k, seed, alpha, min_drop = cfg["k"], cfg["seed"], cfg["alpha"], cfg["min_drop"]
     window_size = cfg["window_size"]
     rid = rid or run_id(cfg)
-    failures = cfg.get("failures") or {}
-    injectors = lookup(INJECTORS, failures, "injector")
     params = detector_params(cfg["detectors"])
     detectors = lookup(DETECTORS, params, "detector")
 
@@ -194,13 +278,13 @@ def run_dataset(ds, retriever, cfg, rid: str | None = None) -> list[ResultRow]:
         fitted[name].attach(retriever)
         fitted[name].fit(reference)
 
-    # one injector per failure, so anything it caches (a second model's vectors) is reused across severities
+    # one injector per label, so anything it caches (a second model's vectors) is reused across severities
     made = {}
-    for name, cls in injectors.items():
-        made[name] = cls()
-        made[name].attach(retriever)
+    for label, (name, _, kwargs) in failures.items():
+        made[label] = INJECTORS[name](**kwargs)
+        made[label].attach(retriever, state)
 
-    conditions = [("clean", 0.0)] + [(f, s) for f, sevs in failures.items() for s in sevs]
+    conditions = [("clean", 0.0)] + [(f, s) for f, (_, sevs, _) in failures.items() for s in sevs]
     rows = []
     for failure, severity in conditions:
         injector = made.get(failure)
@@ -269,15 +353,18 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     datasets = check_datasets(cfg["datasets"], final)
     seeds = run_seeds(cfg)
     load_plugins()
-    check_severities(cfg.get("failures") or {})
-    lookup(INJECTORS, cfg.get("failures") or {}, "injector")
+    failures = failure_params(cfg.get("failures"))
     params = detector_params(cfg["detectors"])
     for name, cls in lookup(DETECTORS, params, "detector").items():
         try:
             cls(**params[name])  # catch a typo'd parameter now, not after embedding the corpus
         except TypeError as e:
             raise SystemExit(f"bad parameters for {name}: {e}") from None
-    make_retriever = make_retriever or (lambda: Retriever(cfg["model"], **cfg.get("retriever", {})))
+    make_retriever = make_retriever or (lambda: default_retriever(cfg))
+    # building a Retriever doesn't load the model
+    run_cfg = injector_run_cfg(make_retriever())
+    check_injectors(failures, run_cfg)
+    check_final_revision(run_cfg, final)
     # one run_id for all seeds, so the replicates can be grouped together
     hashed = {**DEFAULTS, **cfg}
     if "seeds" in cfg:
@@ -288,8 +375,25 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     for name in datasets:
         ds, retriever = loader(name), make_retriever()
         for seed in seeds:
-            rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, rid=rid)
+            rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, failures, rid=rid)
     return to_frame(rows)
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """yaml.safe_load silently keeps the last of two repeated keys, so a repeated failure
+    label would drop the first entry. This refuses them instead."""
+
+    def construct_mapping(self, node, deep=False):
+        keys, line = [], None
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if line is None and key in keys:
+                line = key_node.start_mark.line + 1  # where the first repeat is written
+            keys.append(key)
+        repeated = sorted({str(k) for k in keys if keys.count(k) > 1})
+        if repeated:
+            raise SystemExit(f"line {line}: repeated keys {repeated}")
+        return super().construct_mapping(node, deep=deep)
 
 
 def main() -> None:
@@ -309,7 +413,7 @@ def main() -> None:
         parser.error("--config is required")
 
     with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+        cfg = yaml.load(f, Loader=UniqueKeyLoader)
     check_datasets(cfg["datasets"], args.final)
 
     df = run(cfg, final=args.final)

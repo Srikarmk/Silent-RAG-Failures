@@ -60,6 +60,8 @@ Each failure is applied at increasing severity, from 10% up to 90% of the corpus
 | F4 | Query shift | Move query traffic toward topics outside the corpus |
 | F5 | Config mismatch | Drop the query prefix, turn off vector normalization, etc. |
 
+**F1** replaces a random `severity` fraction of index rows with the same documents embedded by `alt_model`. Queries stay on the clean model. `alt_model` and `alt_revision` (a lowercase 40-character commit hash) have no defaults and must be in the config, and each replacement model gets its own label. F1 rejects an `alt_model` that is the clean model (compared ignoring case, whatever the revisions). It also rejects models that need a document prefix F1 doesn't add: `intfloat/e5-*` and `intfloat/multilingual-e5-*`, whose model cards require `passage: `. Limitations: model names are compared as written, so `all-MiniLM-L6-v2` and `sentence-transformers/all-MiniLM-L6-v2` count as different. The prefix list only blocks the models it names, so an unlisted model that needs a prefix, or an e5 copy under another org, gets through. Models are added to the list only with evidence from their card, and every replacement model is pinned in a reviewed config.
+
 We also run **negative controls**: changes that move the data around without hurting retrieval. A good detector should stay quiet on these, so they tell us its false-alarm rate. Which ones we use is still being decided in [#9](https://github.com/Srikarmk/Silent-RAG-Failures/issues/9).
 
 ## Detectors
@@ -159,8 +161,6 @@ python -m silent_rag.run --config configs/dev.yaml             # development run
 python -m silent_rag.run --config configs/final.yaml --final   # held-out run, SciFact + FiQA
 ```
 
-Both configs name `F1_partial_upgrade` and `ks_top1`, which don't exist yet (#8). Until they land the runner stops with `no injector registered for ...`; `--list` shows what is available.
-
 Datasets (`nfcorpus`, `scifact`, `fiqa`) download from the Hugging Face Hub at pinned revisions. Corpus embeddings are cached under `cache/embeddings/` (or `$SILENT_RAG_CACHE/embeddings/`), keyed on the model, its revision, the settings that change the vectors and the corpus text itself, so only the first run of a setup embeds the corpus. The runner refuses SciFact and FiQA unless `--final` is passed.
 
 **Output.** One parquet file, `results/<config name>.parquet` (or `--out`), with one row per dataset × failure × severity × trial × detector:
@@ -181,19 +181,26 @@ Datasets (`nfcorpus`, `scifact`, `fiqa`) download from the Hugging Face Hub at p
 datasets: [nfcorpus]
 model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
 retriever: {revision: <hub commit>}        # any Retriever argument: normalize, query_prefix, max_seq_length...
-failures:
-  F1_partial_upgrade: [0.1, 0.5, 0.9]      # registry name: severities (fraction affected, in (0, 1])
+failures:                                  # at least one entry
+  F1_partial_upgrade_minilm:               # label: the `failure` value in the results table
+    injector: F1_partial_upgrade           # registered injector that runs
+    severities: [0.1, 0.5, 0.9]            # fraction affected, in (0, 1]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2       # other keys go to the constructor
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  # shorthand for an injector without params: F9_my_failure: [0.1, 0.5]  (label = injector name)
 detectors: [ks_top1, re_embed]
 window_size: 100
 trials: 20
-seed: 0
+seeds: [0, 1, 2]                           # repeats the whole run (windows, reference window, damage) under one run_id
 # optional, with defaults: k: 10, alpha: 0.05, min_drop: 0.0
-# seeds: [0, 1, 2] instead of seed repeats the whole run (windows, reference window, damage) under one run_id
+# seed: 0 instead of seeds runs once
 ```
+
+Labels must be unique (ignoring case and spaces), and can't be `clean` or another injector's registered name. Each label's params are checked against its injector's constructor before anything loads or is embedded.
 
 Detectors that take parameters are listed as `{name: {param: value}}`, e.g. `- re_embed: {sample: 50, metric: l2}`. `re_embed` treats per-doc distances below a noise floor as 0 (`floor`, default 1e-5 for cosine and 5e-3 for l2), so a clean index scores exactly 0 and thresholds should be above 0. One setting per detector per run; use two runs to compare settings.
 
-**Adding a failure.** Put a module in `src/silent_rag/inject/`, subclass `Injector` and register it. The `name` is what the config and the results table use.
+**Adding a failure.** Put a module in `src/silent_rag/inject/`, subclass `Injector` and register it. The `name` is what `injector:` refers to in the config. The results table records the config label instead.
 
 ```python
 import dataclasses
@@ -210,9 +217,11 @@ class MyFailure(Injector):
         return dataclasses.replace(state, doc_embeddings=emb)
 ```
 
+Config keys other than `injector` and `severities` are passed to the constructor. Don't give a default to anything that changes the damage, so every setting that matters is written in the config. For checks specific to your injector, override the classmethod `check_config(params, run_cfg)` and raise `ValueError`. It runs before any data loads, with the label's params and the clean `model` and `revision`, and the runner reports the error under the label.
+
 Keep query positions fixed. If the failure changes `query_texts`, set `query_embeddings=None` so the runner re-embeds them with the clean model; if it changes how queries are encoded, edit `query_embeddings` yourself (`state.config` is descriptive, nothing reads it to re-encode). The index and query arrays are read-only during a run, so copy before changing them. With chunking, set `parent_ids` and keep `doc_ids`, `doc_texts` and `doc_embeddings` row-aligned.
 
-The runner makes one injector per failure and calls `attach(retriever)` on it once, then reuses it for every severity and trial. Put expensive setup there (a second model's embeddings for the whole corpus, a re-chunked corpus) and pick rows per trial in `apply`, rather than re-embedding inside every trial.
+For each dataset and seed, the runner makes one injector per failure and calls `attach(retriever, state)` on it once, before any `apply`. `state` is the clean, read-only `RetrievalState`, the same object `apply` later receives, so `attach` can read `state.doc_ids` and `state.doc_texts`. The instance is then reused for every severity and trial. Put expensive setup in `attach` (a second model's embeddings for the whole corpus, a re-chunked corpus), keep the result on `self`, and pick rows per trial in `apply`, rather than re-embedding inside every trial. Encode through `Retriever.embed_texts` so the vectors are cached on disk and later seeds reuse them.
 
 **Adding a detector.** Same pattern in `src/silent_rag/detect/`:
 
@@ -230,7 +239,7 @@ class MyDetector(Detector):
         return float(self.ref - window.topk_scores[:, 0].mean())
 ```
 
-An `Observation` holds what a production system could log (query ids, texts and embeddings, top-k ids and scores, the index rows with their ids and texts) and deliberately no qrels. Treat it as read-only. A detector that needs to re-embed overrides `attach(retriever)`, which gets the clean retriever once before `fit()`. New modules in `inject/` and `detect/` are picked up automatically.
+An `Observation` holds what a production system could log (query ids, texts and embeddings, top-k ids and scores, the index rows with their ids and texts) and deliberately no qrels. Treat it as read-only. A detector that needs to re-embed overrides `attach(retriever)`, which gets the clean retriever. The runner makes a fresh detector for each dataset and seed and calls `attach` once, just before `fit()`. New modules in `inject/` and `detect/` are picked up automatically.
 
 ## Repository
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -23,6 +24,12 @@ def cache_key(dataset: str, model: str, chunking: dict, **settings) -> str:
         {"dataset": dataset, "model": model, "chunking": chunking, **settings}, sort_keys=True
     )
     return hashlib.sha1(blob.encode()).hexdigest()[:16]
+
+
+def is_commit_hash(revision) -> bool:
+    """A pinned Hub revision: a full 40-character commit hash, lowercase only, since the
+    revision goes into the cache key and one commit should have one spelling."""
+    return isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision) is not None
 
 
 class Retriever:
@@ -88,24 +95,7 @@ class Retriever:
         doc_ids = list(dataset.corpus)
         doc_texts = [dataset.corpus[d] for d in doc_ids]
         query_ids = list(dataset.queries)
-
-        cfg = self.config
-        key = cache_key(
-            dataset.name,
-            self.model,
-            cfg["chunking"],
-            revision=self.revision,
-            normalize=self.normalize,
-            max_seq_length=self.max_seq_length,
-            doc_text=cfg["doc_text"],
-            # ids and texts, so an edited corpus (new revision, perturbed copy) can't hit old vectors
-            corpus=hashlib.sha1("\0".join(doc_ids + doc_texts).encode()).hexdigest(),
-        )
-        path = (cache_dir or CACHE_DIR) / f"{dataset.name}-{key}.npy"
-        doc_embeddings = load_cached(path, len(doc_ids))
-        if doc_embeddings is None:
-            doc_embeddings = self.encode(doc_texts)
-            save_cached(path, doc_embeddings)
+        doc_embeddings, key = self.embed_texts(dataset.name, doc_ids, doc_texts, cache_dir)
 
         query_texts = [dataset.queries[q] for q in query_ids]
         return RetrievalState(
@@ -115,8 +105,32 @@ class Retriever:
             query_ids=query_ids,
             query_texts=query_texts,
             query_embeddings=self.embed_queries(query_texts),
-            config={**cfg, "cache_key": key},
+            config={**self.config, "cache_key": key},
         )
+
+    def embed_texts(
+        self, name: str, ids: list[str], texts: list[str], cache_dir: Path | None = None
+    ) -> tuple[np.ndarray, str]:
+        """Encode texts with this retriever's model, through the disk cache.
+        Returns (vectors, cache_key); the file is `<name>-<key>.npy`."""
+        cfg = self.config
+        key = cache_key(
+            name,
+            self.model,
+            cfg["chunking"],
+            revision=self.revision,
+            normalize=self.normalize,
+            max_seq_length=self.max_seq_length,
+            doc_text=cfg["doc_text"],
+            # ids and texts, so an edited corpus (new revision, perturbed copy) can't hit old vectors
+            corpus=hashlib.sha1("\0".join(ids + texts).encode()).hexdigest(),
+        )
+        path = (cache_dir or CACHE_DIR) / f"{name}-{key}.npy"
+        vecs = load_cached(path, len(ids))
+        if vecs is None:
+            vecs = self.encode(texts)
+            save_cached(path, vecs)
+        return vecs, key
 
     def embed_queries(self, query_texts: list[str]) -> np.ndarray:
         return self.encode([self.query_prefix + q for q in query_texts])

@@ -19,10 +19,20 @@ class Injector(ABC):
     name: str
     harmful: bool = True  # False for the H1-H3 harmless changes
 
-    def attach(self, retriever) -> None:
-        """Called once per run with the clean retriever, before any apply(). The same
-        instance then handles every severity and trial, so expensive setup (a second
-        model's embeddings, a re-chunked corpus) belongs here or in a cache on self."""
+    def attach(self, retriever, state: RetrievalState) -> None:
+        """Called with the clean retriever and the clean, read-only `state` before any
+        apply(); `state` is the same object every apply() later receives. The runner
+        makes a fresh instance and calls this once per dataset and seed, not once per
+        run. That instance then handles every severity and trial, so expensive setup
+        (a second model's corpus embeddings, a re-chunked corpus) belongs here, kept
+        on self."""
+
+    @classmethod
+    def check_config(cls, params: dict, run_cfg: dict) -> None:
+        """Injector-specific config checks, run at bind time before anything is
+        embedded and before any instance exists. `params` are this label's constructor
+        params; `run_cfg` holds the clean `model` and `revision`. Raise ValueError to
+        reject. Does nothing by default."""
 
     @abstractmethod
     def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState: ...

@@ -2,6 +2,7 @@ import dataclasses
 
 import numpy as np
 import pytest
+import yaml
 
 from silent_rag import run as runner
 from silent_rag.detect.base import REGISTRY as DETECTORS
@@ -98,8 +99,9 @@ class InPlaceInjector(Injector):
 
 def test_detector_cannot_modify_the_index(monkeypatch):
     monkeypatch.setitem(DETECTORS, ScaleIndex.name, ScaleIndex)
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
     with pytest.raises(ValueError, match="read-only"):
-        run({"detectors": [ScaleIndex.name]})
+        run({"failures": {ScrambleDocs.name: [0.5]}, "detectors": [ScaleIndex.name]})
 
 
 def test_injector_cannot_modify_the_clean_state(monkeypatch):
@@ -136,12 +138,19 @@ class CountingInjector(ScrambleDocs):
     name = "test_counting"
     made = 0
     attached = []
+    attached_states = []
+    applied_states = []
 
     def __init__(self):
         CountingInjector.made += 1
 
-    def attach(self, retriever):
+    def attach(self, retriever, state):
         CountingInjector.attached.append(retriever)
+        CountingInjector.attached_states.append(state)
+
+    def apply(self, state, severity, seed):
+        CountingInjector.applied_states.append(state)
+        return super().apply(state, severity, seed)
 
 
 def test_one_injector_per_failure_attached_once(monkeypatch):
@@ -150,6 +159,19 @@ def test_one_injector_per_failure_attached_once(monkeypatch):
     CountingInjector.made, CountingInjector.attached = 0, []
     run({"failures": {CountingInjector.name: [0.1, 0.5, 0.9]}, "detectors": [MeanTop1.name]})
     assert CountingInjector.made == 1 and len(CountingInjector.attached) == 1
+
+
+def test_attach_and_every_apply_get_the_same_clean_state(monkeypatch):
+    monkeypatch.setitem(INJECTORS, CountingInjector.name, CountingInjector)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    monkeypatch.setattr(CountingInjector, "attached_states", [])
+    monkeypatch.setattr(CountingInjector, "applied_states", [])
+    severities, trials = [0.1, 0.5], 3
+    run({"failures": {CountingInjector.name: severities}, "detectors": [MeanTop1.name], "trials": trials})
+    [clean] = CountingInjector.attached_states
+    assert len(CountingInjector.applied_states) == len(severities) * trials
+    assert all(s is clean for s in CountingInjector.applied_states)
+    assert not clean.doc_embeddings.flags.writeable
 
 
 def test_injector_seeds_dont_collide_across_config_seeds():
@@ -180,6 +202,254 @@ def test_run_id_ignores_spelled_out_defaults():
 def test_bad_severities_are_rejected_readably(sevs):
     with pytest.raises(SystemExit):
         runner.check_severities({"F1": sevs})
+
+
+class ParamInjector(Injector):
+    name = "test_param"
+
+    def __init__(self, strength=1):
+        self.strength = strength
+
+    def apply(self, state, severity, seed):
+        return state
+
+
+class OtherInjector(Injector):
+    name = "test_other"
+
+    def apply(self, state, severity, seed):
+        return state
+
+
+class RequiredInjector(Injector):
+    name = "test_required"
+
+    def __init__(self, level):
+        self.level = level
+
+    def apply(self, state, severity, seed):
+        return state
+
+
+@pytest.fixture
+def label_injectors(monkeypatch):
+    monkeypatch.setitem(INJECTORS, ParamInjector.name, ParamInjector)
+    monkeypatch.setitem(INJECTORS, OtherInjector.name, OtherInjector)
+    monkeypatch.setitem(INJECTORS, RequiredInjector.name, RequiredInjector)
+
+
+def test_failure_params_accepts_list_and_label_forms(label_injectors):
+    assert runner.failure_params({
+        "test_other": [0.5],
+        "test_param": {"injector": "test_param", "severities": [0.2]},  # a label may be its own injector's name
+        "strong": {"injector": "test_param", "severities": [0.1, 0.9], "strength": 3},
+    }) == {
+        "test_other": ("test_other", [0.5], {}),
+        "test_param": ("test_param", [0.2], {}),
+        "strong": ("test_param", [0.1, 0.9], {"strength": 3}),
+    }
+
+
+ENTRY = {"injector": "test_param", "severities": [0.5]}
+
+
+@pytest.mark.parametrize("failures, match", [
+    pytest.param(None, "at least one failure", id="null"),
+    pytest.param({}, "at least one failure", id="empty"),
+    pytest.param(["test_param"], "must be a mapping", id="not-a-mapping"),
+    pytest.param({1: ENTRY}, "non-blank strings", id="label-not-str"),
+    pytest.param({" ": ENTRY}, "non-blank strings", id="label-blank"),
+    pytest.param({"clean": ENTRY}, "undamaged condition", id="label-clean"),
+    pytest.param({" Clean ": ENTRY}, "undamaged condition", id="label-clean-case"),
+    pytest.param({"test_other": ENTRY}, "registered name of 'test_other'", id="label-other-injector"),
+    pytest.param({"TEST_Other": ENTRY}, "registered name of 'test_other'", id="label-other-injector-case"),
+    pytest.param({"x": "test_param"}, "expected", id="entry-neither-form"),
+    pytest.param({"x": {"severities": [0.5]}}, "needs `injector:`", id="injector-missing"),
+    pytest.param({"x": {"injector": " ", "severities": [0.5]}}, "needs `injector:`", id="injector-blank"),
+    pytest.param({"x": {"injector": None, "severities": [0.5]}}, "needs `injector:`", id="injector-null"),
+    pytest.param({"x": {"injector": "nope", "severities": [0.5]}}, "no injector registered as 'nope'",
+                 id="injector-unregistered"),
+    pytest.param({"nope": [0.5]}, "no injector registered as 'nope'", id="list-form-unregistered"),
+    pytest.param({"x": {"injector": "test_param"}}, "needs `severities", id="severities-missing"),
+    pytest.param({"x": {"injector": "test_param", "severities": 0.5}}, "must be a list", id="severities-not-list"),
+    pytest.param({"x": {"injector": "test_param", "severities": [1.5]}}, r"in \(0, 1\]", id="severity-out-of-range"),
+    pytest.param({"a": ENTRY, "b": ENTRY}, "same parameters", id="same-params-twice"),
+    pytest.param({"test_param": [0.5], "b": ENTRY}, "same parameters", id="same-params-as-list-form"),
+    pytest.param({"test_required": [0.5]}, r"test_required: bad parameters for test_required, given \[\]: missing",
+                 id="list-form-needs-params"),
+    pytest.param({"x": {"injector": "test_required", "severities": [0.5]}}, r"x: .* given \[\]: missing .*'level'",
+                 id="param-missing"),
+    pytest.param({"x": {"injector": "test_required", "severities": [0.5], "levle": 2}},
+                 r"x: .* given \['levle'\]: missing .*'level'", id="param-misspelled"),
+    pytest.param({"x": {"injector": "test_other", "severities": [0.5], "strength": 2}},
+                 r"x: .* given \['strength'\]: got an unexpected keyword argument 'strength'", id="param-not-taken"),
+])
+def test_failure_params_rejects_bad_entries(label_injectors, failures, match):
+    with pytest.raises(SystemExit, match=match):
+        runner.failure_params(failures)
+
+
+def test_labels_must_differ_beyond_case_and_spaces(label_injectors):
+    stronger = {**ENTRY, "strength": 2}
+    assert set(runner.failure_params({"test_param": ENTRY, "TEST_PARAM_2": stronger})) == {"test_param", "TEST_PARAM_2"}
+    with pytest.raises(SystemExit, match="differ only in case or spaces"):
+        runner.failure_params({"test_param": ENTRY, " TEST_PARAM ": stronger})
+
+
+def test_check_config_does_nothing_by_default():
+    assert ParamInjector.check_config({"strength": 2}, {"model": "m", "revision": None}) is None
+
+
+class CheckedInjector(ParamInjector):
+    name = "test_checked"
+    calls = []
+
+    @classmethod
+    def check_config(cls, params, run_cfg):
+        cls.calls.append((params, run_cfg))
+        if params.get("strength") == 0:
+            raise ValueError("strength must be positive")
+
+
+@pytest.fixture
+def checked(monkeypatch):
+    monkeypatch.setitem(INJECTORS, CheckedInjector.name, CheckedInjector)
+    monkeypatch.setattr(CheckedInjector, "calls", [])
+
+
+CHECKED = {"injector": CheckedInjector.name, "severities": [0.5]}
+
+
+def checked_cfg(failures, **extra):
+    return {"datasets": ["nfcorpus"], "failures": failures, "detectors": [], "window_size": 10, "trials": 1, **extra}
+
+
+def test_check_config_runs_once_per_label_before_any_data(checked):
+    loaded = []
+
+    def loader(name):
+        loaded.append(len(CheckedInjector.calls))
+        raise RuntimeError("loader reached")
+
+    cfg = checked_cfg({"a": {**CHECKED, "strength": 1}, "b": {**CHECKED, "strength": 2}}, model="fake")
+    with pytest.raises(RuntimeError, match="loader reached"):
+        runner.run(cfg, loader=loader, make_retriever=fake_retriever)
+    assert loaded == [2]
+    clean = {"model": "fake", "revision": None}
+    assert CheckedInjector.calls == [({"strength": 1}, clean), ({"strength": 2}, clean)]
+
+
+def test_check_config_value_error_names_the_label(checked):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    with pytest.raises(SystemExit, match=r"^weak: strength must be positive$"):
+        runner.run(checked_cfg({"weak": {**CHECKED, "strength": 0}}), loader=loader, make_retriever=fake_retriever)
+
+
+def test_check_config_gets_the_retrievers_model_when_config_has_none(checked):
+    def loader(name):
+        raise RuntimeError("loader reached")
+
+    cfg = checked_cfg({"a": CHECKED})
+    assert "model" not in cfg and "retriever" not in cfg
+    with pytest.raises(RuntimeError, match="loader reached"):
+        runner.run(cfg, loader=loader, make_retriever=lambda: Retriever("fake", revision="r1", encoder=HashEncoder()))
+    assert CheckedInjector.calls == [({}, {"model": "fake", "revision": "r1"})]
+
+
+def test_run_checks_label_entries_before_any_work(label_injectors):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    cfg = {"datasets": ["nfcorpus"], "failures": {"x": {**ENTRY, "strenght": 2}}, "detectors": [],
+           "window_size": 10, "trials": 1}
+    with pytest.raises(SystemExit, match=r"x: bad parameters for test_param, given \['strenght'\]"):
+        runner.run(cfg, loader=loader)
+
+
+def test_run_rejects_a_missing_failures_key():
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    cfg = {"datasets": ["nfcorpus"], "detectors": [], "window_size": 10, "trials": 1}
+    with pytest.raises(SystemExit, match="at least one failure"):
+        runner.run(cfg, loader=loader)
+
+
+def test_null_retriever_block_is_like_a_missing_one():
+    assert runner.default_retriever({"model": "m", "retriever": None}).config == runner.default_retriever({"model": "m"}).config
+
+
+@pytest.mark.parametrize("model", ["missing", None, "  "], ids=["missing", "null", "blank"])
+def test_default_retriever_needs_a_model(model):
+    cfg = {} if model == "missing" else {"model": model}
+    with pytest.raises(SystemExit, match=r"^config needs model: "):
+        runner.default_retriever(cfg)
+
+
+def test_run_without_model_stops_before_any_data(monkeypatch):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    cfg = {"datasets": ["nfcorpus"], "failures": {ScrambleDocs.name: [0.5]}, "detectors": [],
+           "window_size": 10, "trials": 1}
+    with pytest.raises(SystemExit, match=r"^config needs model: .*, got None$"):
+        runner.run(cfg, loader=loader)
+
+
+PINNED = "b207367332321f8e44f96e224ef15bc607f4dbf0"
+
+
+@pytest.mark.parametrize("revision", [None, PINNED.upper()], ids=["unpinned", "uppercase"])
+def test_final_run_needs_a_pinned_clean_revision_before_any_data(checked, revision):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    with pytest.raises(SystemExit, match=rf"^--final needs the clean model's revision pinned .*, got {revision!r}$"):
+        runner.run(checked_cfg({"a": CHECKED}), final=True, loader=loader,
+                   make_retriever=lambda: Retriever("fake", revision=revision, encoder=HashEncoder()))
+
+
+def test_dev_run_does_not_need_a_pinned_clean_revision(checked):
+    class Loaded(Exception):
+        pass
+
+    def loader(name):
+        raise Loaded
+
+    with pytest.raises(Loaded):
+        runner.run(checked_cfg({"a": CHECKED}), final=False, loader=loader, make_retriever=fake_retriever)
+
+
+class RecordingParamInjector(ParamInjector):
+    strengths = []
+
+    def __init__(self, strength=1):
+        super().__init__(strength)
+        RecordingParamInjector.strengths.append(strength)
+
+
+def test_each_label_gets_its_own_injector_and_params(monkeypatch):
+    monkeypatch.setitem(INJECTORS, RecordingParamInjector.name, RecordingParamInjector)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    monkeypatch.setattr(RecordingParamInjector, "strengths", [])
+    entry = {"injector": RecordingParamInjector.name, "severities": [0.5]}
+    out = run({"failures": {"weak": {**entry, "strength": 1}, "strong": {**entry, "strength": 3}},
+               "detectors": [MeanTop1.name]})
+    assert RecordingParamInjector.strengths == [1, 3]
+    assert set(out.failure) == {"clean", "weak", "strong"}
+
+
+def test_config_with_a_repeated_key_is_rejected(tmp_path, monkeypatch):
+    text = "datasets: [nfcorpus]\nfailures:\n  a: [0.5]\n  b: [0.5]\n"
+    assert yaml.load(text, Loader=runner.UniqueKeyLoader) == yaml.safe_load(text)
+    path = tmp_path / "cfg.yaml"
+    path.write_text(text + "  a: [0.9]\n")
+    monkeypatch.setattr("sys.argv", ["run", "--config", str(path)])
+    with pytest.raises(SystemExit, match=r"line 5: repeated keys \['a'\]"):
+        runner.main()
 
 
 def test_duplicate_datasets_run_once():

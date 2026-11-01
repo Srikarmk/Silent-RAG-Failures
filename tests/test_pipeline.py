@@ -8,7 +8,7 @@ from silent_rag.detect.base import REGISTRY as DETECTORS
 from silent_rag.detect.base import Detector
 from silent_rag.inject.base import REGISTRY as INJECTORS
 from silent_rag.inject.base import Injector
-from silent_rag.pipeline import Retriever
+from silent_rag.pipeline import Retriever, is_commit_hash
 from silent_rag.types import Dataset
 
 
@@ -56,6 +56,50 @@ def test_second_embed_loads_from_cache(tmp_path):
 
     Retriever("fake", normalize=False, encoder=enc).embed_corpus(ds, cache_dir=tmp_path)
     assert enc.calls == 2, "changing normalize must miss the cache"
+
+
+def test_embed_texts_caches_under_name_and_key(tmp_path):
+    ds = toy_dataset()
+    ids, texts = list(ds.corpus), list(ds.corpus.values())
+    enc = HashEncoder()
+    r = Retriever("fake", encoder=enc)
+
+    a, key_a = r.embed_texts("toy", ids, texts, cache_dir=tmp_path)
+    assert list(tmp_path.iterdir()) == [tmp_path / f"toy-{key_a}.npy"]
+    assert enc.calls == 1
+
+    b, key_b = r.embed_texts("toy", ids, texts, cache_dir=tmp_path)
+    assert enc.calls == 1, "second call must load from disk, not re-encode"
+    assert key_b == key_a
+    np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("change", [{"model": "fake-alt"}, {"revision": "v2"}], ids=["model", "revision"])
+def test_embed_texts_misses_cache_when_model_or_revision_changes(tmp_path, change):
+    ds = toy_dataset()
+    ids, texts = list(ds.corpus), list(ds.corpus.values())
+    base = {"model": "fake", "revision": None}
+    enc_a, enc_b = HashEncoder(), HashEncoder()
+
+    _, key_a = Retriever(**base, encoder=enc_a).embed_texts("toy", ids, texts, cache_dir=tmp_path)
+    _, key_b = Retriever(**{**base, **change}, encoder=enc_b).embed_texts("toy", ids, texts, cache_dir=tmp_path)
+
+    assert key_a != key_b
+    assert sorted(tmp_path.iterdir()) == sorted(tmp_path / f"toy-{k}.npy" for k in (key_a, key_b))
+    assert enc_b.calls == 1, f"changing {change} must encode, not load the first file"
+
+
+HASH = "b207367332321f8e44f96e224ef15bc607f4dbf0"
+
+
+@pytest.mark.parametrize(
+    "revision, ok",
+    [(HASH, True), (HASH.upper(), False), (HASH[:-1], False), (HASH + "0", False),
+     (f" {HASH}", False), ("main", False), (None, False), (0, False)],
+    ids=["hash", "uppercase", "39", "41", "space", "branch", "none", "int"],
+)
+def test_is_commit_hash(revision, ok):
+    assert is_commit_hash(revision) is ok
 
 
 @pytest.mark.parametrize("name", ["SciFact", "BeIR/scifact", "fiqa-2018", " FIQA "])
