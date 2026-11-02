@@ -52,6 +52,7 @@ class PSI(FeatureDrift):
         return np.maximum(counts / len(values), self.eps)
 
     def compare(self, reference: np.ndarray, current: np.ndarray) -> float:
+        # `reference` is unused: the bins and expected proportions were fixed in fit()
         actual = self.proportions(current)
         return float(((actual - self.expected_) * np.log(actual / self.expected_)).sum())
 
