@@ -176,6 +176,15 @@ def check_score_depth(cfg: dict) -> None:
         raise SystemExit(f"score_depth must be an integer >= k ({k}), got {depth!r}")
 
 
+def check_detectors(params: dict[str, dict], cfg: dict) -> None:
+    """Each detector's own config checks (Detector.check_config), after score_depth is checked."""
+    for name, kwargs in params.items():
+        try:
+            DETECTORS[name].check_config(dict(kwargs), cfg)
+        except ValueError as e:
+            raise SystemExit(f"{name}: {e}") from None
+
+
 def check_injectors(failures: dict, run_cfg: dict) -> None:
     """Each label's injector-specific checks (Injector.check_config), on what failure_params returns."""
     for label, (name, _, params) in failures.items():
@@ -384,13 +393,14 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     for name, cls in lookup(DETECTORS, params, "detector").items():
         try:
             cls(**params[name])  # catch a typo'd parameter now, not after embedding the corpus
-        except TypeError as e:
+        except (TypeError, ValueError) as e:
             raise SystemExit(f"bad parameters for {name}: {e}") from None
     make_retriever = make_retriever or (lambda: default_retriever(cfg))
     # building a Retriever doesn't load the model
     run_cfg = injector_run_cfg(make_retriever())
     check_injectors(failures, run_cfg)
     check_score_depth(cfg)
+    check_detectors(params, cfg)
     check_final_revision(run_cfg, final)
     # one run_id for all seeds, so the replicates can be grouped together
     hashed = {**DEFAULTS, **cfg}

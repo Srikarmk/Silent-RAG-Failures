@@ -16,10 +16,9 @@ not evidence of damage, so unlike KS and PSI these are one-sided.
   scores. A spread-out top-k means a few docs clearly beat the rest; a flat one
   means retrieval couldn't tell them apart. The original divides by the
   query's score against the whole corpus, a language-model quantity with no
-  equivalent for a dense cosine index, so it is left out here, as is usual when
-  NQC is applied to dense retrievers. The paper uses the top 100; `depth: 100`
-  does that with `score_depth: 100` in the run config, and the default
-  `depth: 10` uses the #18 `std10` feature.
+  equivalent for a dense cosine index, so it is left out here. The paper uses
+  the top 100; `depth: 100` does that with `score_depth: 100` in the run
+  config, and the default `depth: 10` uses the #18 `std10` feature.
 - qpp_gap: top-1 minus top-2. How clearly the best doc beats the runner-up,
   the same idea as the margin of a classifier's top prediction.
 
@@ -63,6 +62,13 @@ class NQC(QPP):
         if isinstance(depth, bool) or not isinstance(depth, int) or depth < DEPTH:
             raise ValueError(f"depth has to be an integer >= {DEPTH}, got {depth!r}")
         self.depth = depth
+
+    @classmethod
+    def check_config(cls, params: dict, run_cfg: dict) -> None:
+        # fail before the corpus is embedded, not in fit()
+        depth, logged = params.get("depth", DEPTH), run_cfg.get("score_depth")
+        if depth > DEPTH and (logged is None or logged < depth):
+            raise ValueError(f"depth {depth} needs score_depth >= {depth} in the config, got {logged}")
 
     def values(self, obs: Observation) -> np.ndarray:
         if self.depth == DEPTH:

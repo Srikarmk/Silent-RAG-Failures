@@ -97,12 +97,38 @@ def test_runs_through_the_runner(monkeypatch):
 
 def test_deep_nqc_through_the_runner(monkeypatch):
     scores = run_toy(monkeypatch, NoisyDocs.name, [{"qpp_nqc": {"depth": 25}}], score_depth=25)
-    assert scores.notna().all().all()
-    with pytest.raises(ValueError, match="score_depth"):
-        run_toy(monkeypatch, NoisyDocs.name, [{"qpp_nqc": {"depth": 25}}])
+    assert scores.loc["qpp_nqc", NoisyDocs.name] > scores.loc["qpp_nqc", "clean"]
 
 
-def test_clean_windows_center_on_zero(monkeypatch):
-    # no damage: window means scatter around the reference mean, so scores do too
-    scores = run_toy(monkeypatch, NoisyDocs.name, ["qpp_max", "qpp_gap", "qpp_nqc"])
-    assert (scores["clean"].abs() < 0.1).all()
+def test_exact_offset_and_sign():
+    rng = np.random.default_rng(0)
+    scores = np.sort(rng.uniform(0.3, 0.8, (50, 100)), axis=1)[:, ::-1]
+    reference = obs(scores[:, :10], deep=scores)
+    lower = obs(scores[:, :10] - 0.02, deep=scores - 0.02)
+    for det, drop in ((MaxScore(), 0.02), (GapQPP(), 0.0), (NQC(), 0.0), (NQC(depth=100), 0.0)):
+        det.fit(reference)
+        assert det.score(reference) == 0.0
+        # everything 0.02 lower: top1 drops by exactly that, gap and spread don't move
+        assert det.score(lower) == pytest.approx(drop, abs=1e-6)
+
+
+def test_config_mistakes_fail_before_any_data(monkeypatch):
+    def loader(name):
+        raise AssertionError("should have failed before loading data")
+
+    base = {"datasets": ["nfcorpus"], "failures": {NoisyDocs.name: [0.5]}, "window_size": 15, "trials": 1}
+    monkeypatch.setitem(INJECTORS, NoisyDocs.name, NoisyDocs)
+    cases = [
+        ({"detectors": [{"qpp_nqc": {"depth": 100}}]}, r"qpp_nqc: depth 100 needs score_depth >= 100 .* got None"),
+        ({"detectors": [{"qpp_nqc": {"depth": 100}}], "score_depth": 50}, "got 50"),
+        ({"detectors": [{"qpp_nqc": {"depth": 5}}]}, "bad parameters for qpp_nqc: depth has to be an integer >= 10"),
+    ]
+    for cfg, message in cases:
+        with pytest.raises(SystemExit, match=message):
+            runner.run({**base, **cfg}, loader=loader, make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
+
+
+def test_check_config_does_nothing_by_default():
+    assert MaxScore.check_config({}, {}) is None
+    assert NQC.check_config({}, {}) is None
+    assert NQC.check_config({"depth": 100}, {"score_depth": 100}) is None
