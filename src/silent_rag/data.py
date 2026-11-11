@@ -30,7 +30,7 @@ SOURCES = {
 }
 
 
-# Corpora used only as a source of off-topic documents for the H_offtopic_docs negative control.
+# Corpora used only as a source of distractor documents for F2_distractors.
 # Never a held-out set and never a dataset we evaluate on, so adding them can't leak anything.
 DISTRACTOR_SOURCES = {
     "arguana": {"repo": "BeIR/arguana", "revision": "9bcf8fc0320c4e3860e25b8b85fa205fcdd7078f"},
