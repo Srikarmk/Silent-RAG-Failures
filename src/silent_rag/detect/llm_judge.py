@@ -36,8 +36,8 @@ class LLMJudge(Detector):
     @classmethod
     def check_config(cls, params: dict, run_cfg: dict) -> None:
         model = params.get("model", judge.DEFAULT_MODEL)
-        if model not in judge.PRICES:
-            raise ValueError(f"model must be one of {sorted(judge.PRICES)} (priced), got {model!r}")
+        if not judge.known(model):
+            raise ValueError(f"model must be one of {sorted(judge.PRICES)} or ollama:<name>, got {model!r}")
         for name in ("queries", "depth"):
             v = params.get(name, 1)
             if isinstance(v, bool) or not isinstance(v, int) or v < 1:

@@ -11,6 +11,7 @@ tokens from Anthropic's price list (thinking tokens bill as output); the Batches
 halves them. `agreement` checks the judge against NFCorpus qrels on clean retrieval,
 which #26 requires before the judge is trusted as a reference.
 
+    python -m silent_rag.judge agreement --config configs/dev.yaml --model ollama:qwen3:30b-a3b
     python -m silent_rag.judge agreement --config configs/dev.yaml --model claude-haiku-5-5 --estimate
 """
 
@@ -28,12 +29,16 @@ import numpy as np
 
 from silent_rag import pipeline
 
-PROMPT_VERSION = "v1"
+# v2: v1 called ~55% of clean top-5 results relevant against ~33% in the qrels. v2 asks for a
+# specific connection, measured on 80 clean NFCorpus pairs (qwen3:30b-a3b: kappa 0.40 -> 0.47)
+PROMPT_VERSION = "v2"
 SYSTEM = (
     "You judge results from a search engine over medical and nutrition research abstracts. "
-    "You get a user's question and one retrieved document. Decide whether the document is "
-    "relevant: it contains information a person researching the question would use or cite. "
-    "A document on a related topic that does not bear on the question is not relevant."
+    "You get a user's question and one retrieved document. The document is relevant only if it "
+    "directly studies or reports on the specific subject of the question, so that an article "
+    "answering the question would cite it as evidence. Sharing a broad topic (nutrition, a disease, "
+    "a food group) is not enough. Most retrieved documents are not relevant; say relevant only "
+    "when the connection is specific."
 )
 SCHEMA = {
     "type": "object",
@@ -47,9 +52,21 @@ PRICES = {
     "claude-sonnet-5-5": (2.00, 10.00),
     "claude-haiku-5-5": (0.10, 0.50),
 }
-DEFAULT_MODEL = "claude-opus-5-5"
+# free and local; any PRICES model works too, and costs money
+DEFAULT_MODEL = "ollama:qwen3:30b-a3b"
 # relevance is a classification call: low effort is the documented setting for those
 DEFAULT_EFFORT = "low"
+# "ollama:<name>" runs a local model through Ollama (http://localhost:11434): free, no API key
+OLLAMA = "ollama:"
+OLLAMA_URL = "http://localhost:11434/api/chat"
+
+
+def is_local(model: str) -> bool:
+    return model.startswith(OLLAMA)
+
+
+def known(model: str) -> bool:
+    return model in PRICES or (is_local(model) and len(model) > len(OLLAMA))
 
 
 @dataclass
@@ -65,6 +82,8 @@ def key(model: str, query: str, doc: str) -> str:
 
 
 def cost(model: str, input_tokens: int, output_tokens: int, batch: bool = False) -> float:
+    if is_local(model):
+        return 0.0
     if model not in PRICES:
         raise ValueError(f"no price for {model!r}; add it to PRICES from the published price list")
     p_in, p_out = PRICES[model]
@@ -130,7 +149,40 @@ class Cache:
         self.db.commit()
 
 
-def make_client():
+class OllamaClient:
+    """The slice of the Anthropic client judge_live uses (`messages.create`), served by a
+    local Ollama model: the same system prompt, user turn and JSON schema, temperature 0,
+    thinking off. Returns an object shaped like an Anthropic Message."""
+
+    def __init__(self, url: str = OLLAMA_URL, timeout: float = 600.0):
+        self.url, self.timeout = url, timeout
+        self.messages = self
+
+    def create(self, model: str, system: str, messages: list, output_config: dict, **_) -> object:
+        import urllib.request
+        from types import SimpleNamespace
+
+        body = {
+            "model": model.removeprefix(OLLAMA),
+            "messages": [{"role": "system", "content": system}, *messages],
+            "format": output_config["format"]["schema"],
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0},
+        }
+        req = urllib.request.Request(self.url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            out = json.loads(r.read())
+        return SimpleNamespace(
+            stop_reason="end_turn" if out.get("done_reason", "stop") == "stop" else "max_tokens",
+            content=[SimpleNamespace(type="text", text=out["message"]["content"])],
+            usage=SimpleNamespace(input_tokens=out.get("prompt_eval_count", 0), output_tokens=out.get("eval_count", 0)),
+        )
+
+
+def make_client(model: str = DEFAULT_MODEL):
+    if is_local(model):
+        return OllamaClient()
     import anthropic  # optional dependency: pip install -e ".[judge]"
 
     return anthropic.Anthropic()
@@ -143,12 +195,13 @@ def judge_live(pairs: list[tuple[str, str]], model: str, cache: Cache, client=No
     have = cache.get(keys)
     todo = {k: p for k, p in zip(keys, pairs) if k not in have}
     if todo:
-        client = client or make_client()
+        client = client or make_client(model)
         new = {}
         for k, (q, d) in todo.items():
             new[k] = parse(client.messages.create(**params(model, q, d, effort)), model)
             if len(new) % 50 == 0:
                 cache.put(model, new)
+                print(f"judged {len(new)}/{len(todo)}", flush=True)
         cache.put(model, new)
         have.update(new)
     return {k: have[k] for k in keys}
@@ -157,11 +210,13 @@ def judge_live(pairs: list[tuple[str, str]], model: str, cache: Cache, client=No
 def judge_batch(pairs: list[tuple[str, str]], model: str, cache: Cache, client=None,
                 effort: str = DEFAULT_EFFORT, poll_s: float = 60.0) -> dict[str, Judgement]:
     """The same through the Message Batches API, at half price; blocks until it ends."""
+    if is_local(model):
+        raise ValueError("the Batches API is for Anthropic models; judge local models live (they cost nothing)")
     keys = [key(model, q, d) for q, d in pairs]
     have = cache.get(keys)
     todo = {k: p for k, p in zip(keys, pairs) if k not in have}
     if todo:
-        client = client or make_client()
+        client = client or make_client(model)
         requests = [{"custom_id": k, "params": params(model, q, d, effort)} for k, (q, d) in todo.items()]
         new = {}
         for i in range(0, len(requests), 10_000):

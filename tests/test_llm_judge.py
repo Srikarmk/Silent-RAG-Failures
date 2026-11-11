@@ -138,3 +138,42 @@ def test_check_config_rejects_bad_params(params, message):
 def test_registered():
     load_plugins()
     assert DETECTORS["llm_judge"] is LLMJudge
+
+
+# local models through Ollama
+
+
+def test_local_models_are_free_and_refuse_the_batch_api(tmp_path):
+    assert judge.cost("ollama:qwen3:8b", 10_000, 10_000) == 0.0
+    assert judge.known("ollama:qwen3:8b") and not judge.known("ollama:")
+    with pytest.raises(ValueError, match="judge local models live"):
+        judge.judge_batch([("q", "d")], "ollama:qwen3:8b", judge.Cache(tmp_path / "j.sqlite"))
+    assert LLMJudge.check_config({"model": "ollama:gemma3:12b"}, {"k": 10}) is None
+
+
+def test_ollama_client_sends_the_same_prompt_and_schema_and_reads_the_reply(monkeypatch):
+    import urllib.request
+
+    sent = {}
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"message": {"content": '{"relevant": true}'}, "done_reason": "stop",
+                               "prompt_eval_count": 420, "eval_count": 7}).encode()
+
+    def fake_urlopen(req, timeout):
+        sent.update(json.loads(req.data))
+        return Reply()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    msg = judge.OllamaClient().messages.create(**judge.params("ollama:qwen3:8b", "q", "d"))
+    assert sent["model"] == "qwen3:8b" and sent["format"] == judge.SCHEMA and sent["think"] is False
+    assert sent["messages"][0] == {"role": "system", "content": judge.SYSTEM}
+    j = judge.parse(msg, "ollama:qwen3:8b")
+    assert j.relevant is True and j.input_tokens == 420 and j.cost_usd == 0.0
