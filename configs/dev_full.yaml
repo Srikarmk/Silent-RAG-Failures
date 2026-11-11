@@ -1,0 +1,62 @@
+# Full dev benchmark (#69): every failure and negative control built so far, every
+# registered detector, 10 seeds. NFCorpus only. The final report's figures read from
+# this run; rerun it after F2 (stale docs) and F5 land. Parts can run in parallel:
+#   python -m silent_rag.run --config configs/dev_full.yaml --only-seeds 0,1 --out results/parts/dev_full-0.parquet
+#   python -m silent_rag.run --merge results/parts/dev_full-*.parquet --out results/dev_full.parquet
+# Cost per check comes from #27's single-process timings, not from a parallel run.
+datasets: [nfcorpus]
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever:
+  revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256  # title + text truncated at 256 tokens, no chunking (#5)
+failures:
+  # F1 with the four partners from notebook 08, ordered by mean cosine to the clean model
+  F1_partial_upgrade_minilm:
+    injector: F1_partial_upgrade
+    severities: [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  F1_partial_upgrade_minilm_l12:
+    injector: F1_partial_upgrade
+    severities: [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+    alt_model: sentence-transformers/all-MiniLM-L12-v2
+    alt_revision: a50ef00143b4d5391434df20ae11632588ac25be
+  F1_partial_upgrade_bge:
+    injector: F1_partial_upgrade
+    severities: [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+    alt_model: BAAI/bge-small-en-v1.5
+    alt_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  F1_partial_upgrade_gte:
+    injector: F1_partial_upgrade
+    severities: [0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+    alt_model: thenlper/gte-small
+    alt_revision: 17e1f347d17fe144873b1201da91788898c639cd
+  F2_distractors_arguana:
+    injector: F2_distractors
+    severities: [0.1, 0.5, 0.9]
+    source: arguana
+  # negative controls (#9, #15, #72)
+  H_mixed_truncation_512:
+    injector: H_mixed_truncation
+    severities: [0.1, 0.5, 0.9]
+    max_seq_length: 512
+  H_full_swap_minilm:
+    injector: H_full_swap
+    severities: [1.0]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  H_full_swap_bge:
+    injector: H_full_swap
+    severities: [1.0]
+    alt_model: BAAI/bge-small-en-v1.5
+    alt_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  H_query_topic_shift:
+    injector: H_query_topic_shift
+    severities: [0.1, 0.5, 0.9]
+    n_topics: 5
+    topic: 0
+detectors: [ks_top1, ks_gap, ks_mean10, ks_std10, psi_top1, psi_gap, psi_mean10, psi_std10,
+            qpp_max, qpp_nqc, qpp_gap, re_embed, domain_classifier_query, domain_classifier_retrieved_docs]
+window_size: 100
+trials: 20
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]

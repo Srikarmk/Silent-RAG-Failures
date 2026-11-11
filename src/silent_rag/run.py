@@ -422,9 +422,16 @@ def run_seeds(cfg: dict) -> list[int]:
     return seeds
 
 
-def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
+def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None, only_seeds=None):
+    """only_seeds runs a subset of the config's seeds under the full config's run_id, so
+    parts run in separate processes merge into one run (merge_parts)."""
     datasets = check_datasets(cfg["datasets"], final)
     seeds = run_seeds(cfg)
+    if only_seeds is not None:
+        extra = sorted(set(only_seeds) - set(seeds))
+        if extra or not only_seeds:
+            raise SystemExit(f"only_seeds must be a non-empty subset of the config's seeds {seeds}, got {only_seeds}")
+        seeds = [s for s in seeds if s in set(only_seeds)]
     load_plugins()
     failures = failure_params(cfg.get("failures"))
     params = detector_params(cfg["detectors"])
@@ -471,13 +478,47 @@ class UniqueKeyLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
+def merge_parts(frames):
+    """Rows from runs of the same config on disjoint seeds, as one table. Refuses parts
+    from different configs or with a seed in two parts, which would double-count it."""
+    import pandas as pd
+
+    frames = list(frames)
+    if not frames:
+        raise SystemExit("nothing to merge")
+    ids = sorted({r for f in frames for r in f["run_id"].unique()})
+    if len(ids) != 1:
+        raise SystemExit(f"parts come from different configs (run_ids {ids})")
+    seen: dict[int, int] = {}
+    for i, f in enumerate(frames):
+        for s in f["seed"].unique():
+            if s in seen:
+                raise SystemExit(f"seed {s} is in parts {seen[s]} and {i}")
+            seen[s] = i
+    return pd.concat(frames, ignore_index=True).sort_values(
+        ["seed", "failure", "severity", "trial", "detector"], kind="stable", ignore_index=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config")
     parser.add_argument("--final", action="store_true")
     parser.add_argument("--out", help="parquet path, default results/<config name>.parquet")
     parser.add_argument("--list", action="store_true", help="print the registered injectors and detectors")
+    parser.add_argument("--only-seeds", help="comma-separated subset of the config's seeds, for running parts in parallel")
+    parser.add_argument("--merge", nargs="+", metavar="PART", help="merge part parquets into --out instead of running")
     args = parser.parse_args()
+
+    if args.merge:
+        import pandas as pd
+
+        if not args.out:
+            parser.error("--merge needs --out")
+        df = merge_parts(pd.read_parquet(p) for p in args.merge)
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(args.out, index=False)
+        print(f"wrote {len(df)} rows from {len(args.merge)} parts to {args.out}")
+        return
 
     if args.list:
         load_plugins()
@@ -491,7 +532,13 @@ def main() -> None:
         cfg = yaml.load(f, Loader=UniqueKeyLoader)
     check_datasets(cfg["datasets"], args.final)
 
-    df = run(cfg, final=args.final)
+    only = None
+    if args.only_seeds:
+        try:
+            only = [int(x) for x in args.only_seeds.split(",")]
+        except ValueError:
+            parser.error(f"--only-seeds takes comma-separated integers, got {args.only_seeds!r}")
+    df = run(cfg, final=args.final, only_seeds=only)
     out = Path(args.out or f"results/{Path(args.config).stem}.parquet")
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
