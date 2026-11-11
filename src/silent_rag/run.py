@@ -364,6 +364,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                         harmful=p < alpha and drop >= min_drop,
                         p_value=p,
                         cost_s=time.perf_counter() - start,
+                        # API-based detectors report what this check would cost uncached
+                        cost_usd=float(getattr(det, "last_cost_usd", 0.0)),
                     )
                 )
     return rows

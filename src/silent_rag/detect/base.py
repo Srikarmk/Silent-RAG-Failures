@@ -13,6 +13,8 @@ class Detector(ABC):
     """
 
     name: str
+    # API-based detectors set this in score(): the dollar cost of that check, recorded as cost_usd
+    last_cost_usd: float = 0.0
 
     def attach(self, retriever) -> None:
         """Called with the clean retriever, i.e. the model the system is supposed

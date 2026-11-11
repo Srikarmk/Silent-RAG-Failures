@@ -1,0 +1,140 @@
+import json
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from silent_rag import judge
+from silent_rag import run as runner
+from silent_rag.detect.base import REGISTRY as DETECTORS
+from silent_rag.detect.llm_judge import LLMJudge
+from silent_rag.inject.base import REGISTRY as INJECTORS
+from silent_rag.pipeline import Retriever
+from silent_rag.run import load_plugins
+from test_pipeline import HashEncoder, ScrambleDocs, toy_dataset
+
+
+def message(relevant, stop="end_turn", tin=500, tout=100):
+    text = json.dumps({"relevant": relevant}) if relevant is not None else "not json"
+    return SimpleNamespace(stop_reason=stop, content=[SimpleNamespace(type="text", text=text)],
+                           usage=SimpleNamespace(input_tokens=tin, output_tokens=tout))
+
+
+class FakeClient:
+    """Relevant when the question's first word is in the document, like the toy data."""
+
+    def __init__(self):
+        self.calls = []
+        self.messages = self
+
+    def create(self, **params):
+        self.calls.append(params)
+        body = params["messages"][0]["content"]
+        q = body.split("<question>\n")[1].split("\n</question>")[0]
+        d = body.split("<document>\n")[1].split("\n</document>")[0]
+        return message(q.split()[0] in d.split())
+
+
+def test_params_use_structured_output_low_effort_and_a_fixed_system_prompt():
+    p = judge.params("claude-haiku-5-5", "q text", "d text")
+    assert p["system"] == judge.SYSTEM and p["output_config"]["effort"] == "low"
+    assert p["output_config"]["format"]["schema"]["required"] == ["relevant"]
+    assert "<question>\nq text\n</question>" in p["messages"][0]["content"]
+
+
+def test_cost_uses_the_price_list_and_batch_halves_it():
+    assert judge.cost("claude-opus-5-5", 1_000_000, 0) == pytest.approx(4.0)
+    assert judge.cost("claude-haiku-5-5", 0, 1_000_000) == pytest.approx(0.5)
+    assert judge.cost("claude-opus-5-5", 1_000_000, 1_000_000, batch=True) == pytest.approx(12.0)
+    with pytest.raises(ValueError, match="no price"):
+        judge.cost("other-model", 1, 1)
+
+
+@pytest.mark.parametrize("msg, relevant", [
+    (message(True), True), (message(False), False),
+    (message(True, stop="refusal"), None), (message(None), None),
+])
+def test_parse_reads_the_verdict_and_bills_even_without_one(msg, relevant):
+    j = judge.parse(msg, "claude-haiku-5-5")
+    assert j.relevant is relevant and j.cost_usd == pytest.approx(judge.cost("claude-haiku-5-5", 500, 100))
+
+
+def test_live_judging_caches_so_a_rerun_makes_no_calls(tmp_path):
+    cache, client = judge.Cache(tmp_path / "j.sqlite"), FakeClient()
+    pairs = [("apple pie", "apple tart recipe"), ("pear", "plum jam")]
+    first = judge.judge_live(pairs, "claude-haiku-5-5", cache, client)
+    assert len(client.calls) == 2 and [j.relevant for j in first.values()] == [True, False]
+    judge.judge_live(pairs, "claude-haiku-5-5", judge.Cache(tmp_path / "j.sqlite"), client)
+    assert len(client.calls) == 2
+    judge.judge_live(pairs, "claude-opus-5-5", cache, client)  # another model is another judgement
+    assert len(client.calls) == 4
+
+
+def test_agreement_counts_any_positive_grade_and_skips_unjudged():
+    qrels = {"q1": {"a": 2, "b": 0}, "q2": {"c": 1}}
+    rows = [("q1", "a"), ("q1", "b"), ("q2", "c"), ("q2", "x")]
+    out = judge.agreement(rows, [True, False, None, True], qrels)
+    assert out["unjudged"] == 1 and out["accuracy"] == pytest.approx(2 / 3)
+    assert out["precision"] == pytest.approx(0.5) and out["recall"] == pytest.approx(1.0)
+
+
+def test_estimate_needs_no_api_and_scales_with_text():
+    small = judge.estimate([("q", "d" * 400)], "claude-opus-5-5")
+    big = judge.estimate([("q", "d" * 4000)], "claude-opus-5-5")
+    assert big["cost_usd"] >= small["cost_usd"] and small["pairs"] == 1
+
+
+# the detector
+
+
+@pytest.fixture
+def fake_judge(monkeypatch):
+    load_plugins()
+    client = FakeClient()
+    monkeypatch.setattr(LLMJudge, "client", client)
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    return client
+
+
+def run(detector_params, **cfg):
+    base = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, "failures": {ScrambleDocs.name: [1.0]},
+            "detectors": [{"llm_judge": {"model": "claude-haiku-5-5", **detector_params}}]}
+    return runner.run({**base, **cfg}, loader=lambda name: toy_dataset(),
+                      make_retriever=lambda: Retriever("fake", encoder=HashEncoder()))
+
+
+def test_detector_scores_damage_higher_and_records_dollars(fake_judge):
+    df = run({"live": True, "queries": 5, "depth": 3})
+    clean, broken = df[df.failure == "clean"], df[df.failure != "clean"]
+    assert broken.score.mean() > clean.score.mean()
+    assert (df.cost_usd > 0).all()
+    # 5 queries x 3 docs, at most 15 distinct pairs per check
+    assert (df.cost_usd <= 15 * judge.cost("claude-haiku-5-5", 500, 100) + 1e-12).all()
+
+
+def test_rerun_hits_the_cache_and_offline_mode_needs_no_client(fake_judge, monkeypatch):
+    run({"live": True})
+    calls = len(fake_judge.calls)
+    monkeypatch.setattr(LLMJudge, "client", None)
+    again = run({"live": False})  # same windows, all judged already
+    assert len(fake_judge.calls) == calls and len(again) > 0
+
+
+def test_offline_mode_refuses_unjudged_pairs(fake_judge):
+    with pytest.raises(RuntimeError, match="aren't judged yet"):
+        run({"live": False})
+
+
+@pytest.mark.parametrize("params, message", [
+    ({"model": "gpt-x"}, "must be one of"),
+    ({"queries": 0}, "queries must be a positive integer"),
+    ({"depth": 20}, "deeper than the k=10"),
+])
+def test_check_config_rejects_bad_params(params, message):
+    with pytest.raises(ValueError, match=message):
+        LLMJudge.check_config(params, {"k": 10})
+
+
+def test_registered():
+    load_plugins()
+    assert DETECTORS["llm_judge"] is LLMJudge
