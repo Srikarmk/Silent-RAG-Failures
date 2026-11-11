@@ -17,7 +17,8 @@ class Injector(ABC):
     """
 
     name: str
-    harmful: bool = True  # False for the H1-H3 harmless changes
+    harmful: bool = True  # False for the harmless changes (negative controls)
+    severities: tuple[float, ...] | None = None  # the only severities that make sense, if not all of (0, 1]
 
     def attach(self, retriever, state: RetrievalState) -> None:
         """Called with the clean retriever and the clean, read-only `state` before any

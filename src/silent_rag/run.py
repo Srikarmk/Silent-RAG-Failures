@@ -155,6 +155,9 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
         if key in others:
             raise SystemExit(f"{label}: is the registered name of {others[key]!r}, pick another label")
         check_severities({label: sevs})
+        allowed = INJECTORS[name].severities
+        if allowed is not None and any(s not in allowed for s in sevs):
+            raise SystemExit(f"{label}: {name} only runs at severities {list(allowed)}, got {sevs}")
         # bind, don't construct: the runner makes exactly one injector per label, later
         try:
             inspect.signature(INJECTORS[name]).bind(**params)
