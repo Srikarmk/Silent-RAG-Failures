@@ -10,6 +10,8 @@ F1 to F5, with `harmful = False`, so every alarm they raise is a false alarm.
   only runs at severity 1.0.
 - H_offtopic_docs: documents from another corpus added to the index, embedded
   with the clean model. The harmless look-alike of F2's distractors (#72).
+- H_query_topic_shift: traffic oversamples one topic the corpus can answer. The
+  harmless look-alike of F4's out-of-corpus queries (#72).
 
 Measured on NFCorpus in #9: neither drops nDCG@10 (both full swaps improve it),
 and each moves at least one detector. Harmless has to stay measured, not assumed:
@@ -132,6 +134,72 @@ class OffTopicDocs(_Attached):
             doc_embeddings=np.vstack([state.doc_embeddings, self.added_embeddings[rows]]),
             # chunked index: each added doc is one row and its own parent
             parent_ids=None if state.parent_ids is None else list(state.parent_ids) + ids,
+        )
+
+
+@register
+class QueryTopicShift(_Attached):
+    """Traffic moves toward one topic the corpus can answer (#72), the harmless look-alike
+    of F4's shift to topics outside the corpus.
+
+    Topics are k-means clusters of the clean query vectors, fit on the query pool only, so
+    the reference window is never asked. `topic` 0 is the largest cluster. At severity s each
+    pool position is, with probability s, asked one of the topic's queries instead, so the
+    window oversamples the topic and repeats some of its questions, as real traffic does.
+    Each position's draw and replacement are fixed per seed, so higher severities move a
+    superset of positions.
+
+    The index doesn't change, so every question asked gets exactly its clean result: the
+    nDCG@10 drop is 0 by construction. What it tests is whether a detector false-alarms on a
+    change in what users ask about.
+    """
+
+    name = "H_query_topic_shift"
+    harmful = False
+
+    def __init__(self, n_topics: int = 5, topic: int = 0):
+        self.n_topics = n_topics
+        self.topic = topic
+
+    @classmethod
+    def check_config(cls, params: dict, run_cfg: dict) -> None:
+        n, topic = params.get("n_topics", 5), params.get("topic", 0)
+        if isinstance(n, bool) or not isinstance(n, int) or n < 2:
+            raise ValueError(f"n_topics must be an integer >= 2, got {n!r}")
+        if isinstance(topic, bool) or not isinstance(topic, int) or not 0 <= topic < n:
+            raise ValueError(f"topic must be an integer in [0, n_topics), got {topic!r}")
+
+    def attach(self, retriever, state: RetrievalState) -> None:
+        from sklearn.cluster import KMeans
+
+        if self.query_pool is None:
+            raise RuntimeError(f"{self.name}: needs query_pool, which the runner sets before attach()")
+        if state.query_embeddings is None:
+            raise ValueError(f"{self.name}: needs the clean query_embeddings")
+        position = {q: i for i, q in enumerate(state.query_ids)}
+        self.pool_positions = np.array([position[q] for q in self.query_pool])
+        if len(self.pool_positions) < self.n_topics:
+            raise ValueError(f"{self.name}: {len(self.pool_positions)} pool queries is too few for {self.n_topics} topics")
+        vecs = np.asarray(state.query_embeddings, dtype=np.float64)[self.pool_positions]
+        labels = KMeans(n_clusters=self.n_topics, n_init=10, random_state=0).fit_predict(vecs)
+        # topics by size, largest first; ties broken by label so the order is deterministic
+        by_size = sorted(range(self.n_topics), key=lambda c: (-(labels == c).sum(), c))
+        self.topic_positions = self.pool_positions[labels == by_size[self.topic]]
+        self.attached_doc_ids = list(state.doc_ids)
+
+    def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState:
+        self._check_state(state)
+        rng = np.random.default_rng(seed)
+        draws = rng.random(len(self.pool_positions))
+        picks = self.topic_positions[rng.integers(0, len(self.topic_positions), len(self.pool_positions))]
+        source = np.arange(len(state.query_ids))
+        moved = draws < severity
+        source[self.pool_positions[moved]] = picks[moved]
+        return dataclasses.replace(
+            state,
+            query_ids=[state.query_ids[j] for j in source],
+            query_texts=[state.query_texts[j] for j in source],
+            query_embeddings=np.asarray(state.query_embeddings)[source],
         )
 
 

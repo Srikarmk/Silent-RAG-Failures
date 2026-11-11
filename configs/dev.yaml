@@ -34,6 +34,11 @@ failures:
     injector: H_offtopic_docs
     severities: [0.1, 0.5, 0.9]
     source: arguana
+  H_query_topic_shift:
+    injector: H_query_topic_shift
+    severities: [0.1, 0.5, 0.9]
+    n_topics: 5
+    topic: 0
 detectors: [ks_top1, ks_mean10, psi_top1, re_embed]
 window_size: 100
 trials: 20

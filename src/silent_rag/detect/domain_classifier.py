@@ -67,8 +67,13 @@ def _validate(vectors: np.ndarray, ids: list[str], label: str) -> None:
         raise ValueError(f"{label}: embeddings must be a 2-D array aligned with ids")
     if len(vectors) == 0 or not np.isfinite(vectors).all():
         raise ValueError(f"{label}: embeddings must be nonempty and finite")
-    if len(set(ids)) != len(ids):
-        raise ValueError(f"{label}: duplicate identities within the same window")
+    # Real traffic repeats questions, so one identity may appear more than once; the
+    # CV groups keep its copies in one fold. It has to be the same vector every time.
+    first: dict[str, np.ndarray] = {}
+    for identity, vector in zip(ids, vectors):
+        if identity in first and not np.array_equal(first[identity], vector):
+            raise ValueError(f"{label}: identity {identity!r} appears with two different embeddings")
+        first.setdefault(identity, vector)
 
 
 def _cv_auc(
@@ -83,7 +88,7 @@ def _cv_auc(
     if reference.shape[1] != current.shape[1]:
         raise ValueError("reference and current embedding dimensions differ")
 
-    n_splits = min(folds, len(reference_ids), len(current_ids))
+    n_splits = min(folds, len(set(reference_ids)), len(set(current_ids)))
     if n_splits < 2:
         raise ValueError("cross-validation requires at least two samples per domain")
 
