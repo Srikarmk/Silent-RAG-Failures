@@ -8,6 +8,8 @@ F1 to F5, with `harmful = False`, so every alarm they raise is a false alarm.
 - H_full_swap: documents and queries both moved to another model, so the system
   is consistent, just different. A finished model upgrade. All or nothing, so it
   only runs at severity 1.0.
+- H_offtopic_docs: documents from another corpus added to the index, embedded
+  with the clean model. The harmless look-alike of F2's distractors (#72).
 
 Measured on NFCorpus in #9: neither drops nDCG@10 (both full swaps improve it),
 and each moves at least one detector. Harmless has to stay measured, not assumed:
@@ -21,6 +23,7 @@ import dataclasses
 
 import numpy as np
 
+from silent_rag import data
 from silent_rag.inject.base import Injector, register
 from silent_rag.inject.f1_partial_upgrade import check_alt_model, like
 from silent_rag.pipeline import Retriever
@@ -76,6 +79,60 @@ class MixedTruncation(_Attached):
         emb = state.doc_embeddings.copy()
         emb[rows] = self.alt_embeddings[rows]
         return dataclasses.replace(state, doc_embeddings=emb)
+
+
+@register
+class OffTopicDocs(_Attached):
+    """Off-topic documents added to the index, embedded properly with the clean model.
+
+    `severity` is the number added as a fraction of the corpus (0.5 on NFCorpus adds
+    1,816 docs). The index grows and the doc-side distribution moves, the way F2's
+    distractors do, but nobody asks about these documents, so they shouldn't outrank
+    relevant ones. Whether they do is measured, not assumed: a distractor source that
+    lowers nDCG@10 is a failed control. Each seed takes one permutation of the source,
+    cut at the severity, so higher severities add a superset of documents.
+    """
+
+    name = "H_offtopic_docs"
+    harmful = False
+    load = staticmethod(data.load_distractors)  # tests swap in a fake corpus
+
+    def __init__(self, source: str = "arguana"):
+        self.source = source
+
+    @classmethod
+    def check_config(cls, params: dict, run_cfg: dict) -> None:
+        source = params.get("source", "arguana")
+        if source not in data.DISTRACTOR_SOURCES:
+            raise ValueError(f"source must be one of {sorted(data.DISTRACTOR_SOURCES)}, got {source!r}")
+
+    def attach(self, retriever, state: RetrievalState) -> None:
+        corpus = self.load(self.source)
+        ids = sorted(corpus)
+        # prefixed so an added doc can never collide with, or be scored as, a doc of the dataset
+        self.added_ids = [f"{self.source}:{d}" for d in ids]
+        self.added_texts = [corpus[d] for d in ids]
+        self.added_embeddings, _ = retriever.embed_texts(f"h_offtopic_{self.source}", self.added_ids, self.added_texts)
+        _same_dim(self.name, self.source, self.added_embeddings, state.doc_embeddings)
+        self.attached_doc_ids = list(state.doc_ids)
+
+    def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState:
+        self._check_state(state)
+        n = round(severity * len(state.doc_ids))
+        if n > len(self.added_ids):
+            raise ValueError(
+                f"{self.name}: severity {severity} adds {n} docs but {self.source} only has {len(self.added_ids)}"
+            )
+        rows = np.random.default_rng(seed).permutation(len(self.added_ids))[:n]
+        ids = [self.added_ids[i] for i in rows]
+        return dataclasses.replace(
+            state,
+            doc_ids=list(state.doc_ids) + ids,
+            doc_texts=list(state.doc_texts) + [self.added_texts[i] for i in rows],
+            doc_embeddings=np.vstack([state.doc_embeddings, self.added_embeddings[rows]]),
+            # chunked index: each added doc is one row and its own parent
+            parent_ids=None if state.parent_ids is None else list(state.parent_ids) + ids,
+        )
 
 
 @register

@@ -3,9 +3,10 @@ import dataclasses
 import numpy as np
 import pytest
 
+from silent_rag import data
 from silent_rag import run as runner
 from silent_rag.inject.base import REGISTRY
-from silent_rag.inject.controls import FullSwap, MixedTruncation
+from silent_rag.inject.controls import FullSwap, MixedTruncation, OffTopicDocs
 from silent_rag.pipeline import Retriever
 from silent_rag.run import load_plugins
 from test_inject_f1 import CLEAN, PINNED, ShiftedEncoder, SmallEncoder
@@ -172,3 +173,86 @@ def test_both_run_through_the_runner_as_harmless_controls(monkeypatch):
     # but it does move what re_embed sees: the stored vectors aren't the clean model's
     re = df[df.detector == "re_embed"]
     assert (re[re.failure == "swap"].score > re[re.failure == "clean"].score.max()).all()
+
+
+# off-topic documents
+
+
+
+def offtopic(monkeypatch, n=40, **settings):
+    corpus = {f"a{i}": f"unrelated{i} debate{i} filler" for i in range(n)}
+    monkeypatch.setattr(OffTopicDocs, "load", staticmethod(lambda source: corpus))
+    clean, state = clean_state(**settings)
+    inj = OffTopicDocs()
+    inj.attach(clean, state)
+    return inj, state
+
+
+def test_offtopic_sources_are_never_an_evaluation_dataset():
+    assert not set(data.DISTRACTOR_SOURCES) & (runner.DEV_DATASETS | runner.HELD_OUT)
+    assert not set(data.DISTRACTOR_SOURCES) & set(data.SOURCES)
+
+
+def test_offtopic_rejects_an_unknown_source():
+    with pytest.raises(ValueError, match="source must be one of"):
+        OffTopicDocs.check_config({"source": "scifact"}, CLEAN)
+    assert OffTopicDocs.check_config({}, CLEAN) is None
+
+
+@pytest.mark.parametrize("severity, count", [(0.1, 4), (0.5, 20), (0.9, 36)])
+def test_offtopic_adds_a_severity_fraction_of_the_corpus_and_keeps_every_original_row(monkeypatch, severity, count):
+    inj, state = offtopic(monkeypatch)
+    grown = inj.apply(state, severity, seed=0)
+    n = len(state.doc_ids)
+    assert len(grown.doc_ids) == len(grown.doc_texts) == len(grown.doc_embeddings) == n + count
+    assert grown.doc_ids[:n] == list(state.doc_ids)
+    np.testing.assert_array_equal(grown.doc_embeddings[:n], state.doc_embeddings)
+    assert all(d.startswith("arguana:") for d in grown.doc_ids[n:])
+    assert grown.query_embeddings is state.query_embeddings
+
+
+def test_offtopic_grows_a_superset_with_severity_and_follows_the_seed(monkeypatch):
+    inj, state = offtopic(monkeypatch)
+
+    def added(severity, seed):
+        return set(inj.apply(state, severity, seed).doc_ids[len(state.doc_ids):])
+
+    assert added(0.1, 0) < added(0.5, 0) < added(0.9, 0)
+    assert added(0.5, 0) == added(0.5, 0) != added(0.5, 1)
+
+
+def test_offtopic_embeds_with_the_clean_model_so_rows_match_their_text(monkeypatch):
+    inj, state = offtopic(monkeypatch)
+    grown = inj.apply(state, 0.5, seed=0)
+    fresh = Retriever("clean/model", encoder=HashEncoder()).encode(grown.doc_texts)
+    np.testing.assert_allclose(grown.doc_embeddings, fresh, atol=1e-6)
+
+
+def test_offtopic_with_too_few_source_docs_is_an_error(monkeypatch):
+    inj, state = offtopic(monkeypatch, n=10)
+    with pytest.raises(ValueError, match="adds 20 docs but arguana only has 10"):
+        inj.apply(state, 0.5, seed=0)
+
+
+def test_offtopic_extends_parent_ids_on_a_chunked_index(monkeypatch):
+    inj, state = offtopic(monkeypatch)
+    chunked = dataclasses.replace(state, parent_ids=list(state.doc_ids))
+    grown = inj.apply(chunked, 0.5, seed=0)
+    assert grown.parent_ids[: len(state.doc_ids)] == list(state.doc_ids)
+    assert grown.parent_ids[len(state.doc_ids):] == grown.doc_ids[len(state.doc_ids):]
+
+
+def test_offtopic_runs_through_the_runner_without_hurting_or_tripping_re_embed(monkeypatch):
+    corpus = {f"a{i}": f"unrelated{i} debate{i} filler" for i in range(40)}
+    monkeypatch.setattr(OffTopicDocs, "load", staticmethod(lambda source: corpus))
+    cfg = {
+        "datasets": ["nfcorpus"], "model": "clean/model", "window_size": 10, "trials": 2,
+        "failures": {"offtopic": {"injector": "H_offtopic_docs", "severities": [0.5, 0.9]}},
+        "detectors": ["ks_top1", "re_embed", "domain_classifier_retrieved_docs"],
+    }
+    df = runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("clean/model", encoder=HashEncoder()))
+    off = df[df.failure == "offtopic"]
+    assert not off.expected_harmful.any()
+    assert (off.ndcg_drop == 0).all()  # no toy query shares a word with the added docs
+    # every added row is what the clean model makes of its text, so re_embed sees nothing
+    assert (off[off.detector == "re_embed"].score == 0).all()
