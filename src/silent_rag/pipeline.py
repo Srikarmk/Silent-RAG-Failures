@@ -36,8 +36,10 @@ class Retriever:
     """sentence-transformers + exact FAISS inner-product search.
 
     Defaults match the SciFact pilot: title + text, normalized embeddings,
-    IndexFlatIP, no query prefix. Chunking is still open (#5), so for now
-    each doc is one vector and gets truncated at max_seq_length.
+    IndexFlatIP, no query prefix. By default each doc is one vector, truncated at
+    max_seq_length (#5). With `chunk_size` every doc is cut into consecutive pieces
+    of that many tokens (no overlap) and each piece is one row; search ranks docs by
+    their best chunk. Long-document sets like MLDR need it (#12).
     """
 
     def __init__(
@@ -50,7 +52,15 @@ class Retriever:
         batch_size: int = 32,
         device: str = "cpu",
         encoder=None,
+        chunk_size: int | None = None,
     ):
+        if chunk_size is not None:
+            if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size < 1:
+                raise ValueError(f"chunk_size must be a positive number of tokens, got {chunk_size!r}")
+            # the encoder adds [CLS] and [SEP]; a longer chunk would be cut without anyone noticing
+            if max_seq_length is not None and chunk_size > max_seq_length - 2:
+                raise ValueError(f"chunk_size {chunk_size} doesn't fit max_seq_length {max_seq_length} "
+                                 "with the two special tokens; use at most max_seq_length - 2")
         self.model = model
         self.normalize = normalize
         self.query_prefix = query_prefix
@@ -59,6 +69,7 @@ class Retriever:
         self.batch_size = batch_size
         self.device = device
         self._encoder = encoder
+        self.chunk_size = chunk_size
 
     @property
     def config(self) -> dict:
@@ -69,7 +80,7 @@ class Retriever:
             "query_prefix": self.query_prefix,
             "max_seq_length": self.max_seq_length,
             "doc_text": "title_text",
-            "chunking": None,
+            "chunking": None if self.chunk_size is None else {"unit": "tokens", "size": self.chunk_size, "overlap": 0},
         }
 
     @property
@@ -91,10 +102,28 @@ class Retriever:
         )
         return np.ascontiguousarray(vecs, dtype=np.float32)
 
+    @property
+    def tokenizer(self):
+        return self.encoder.tokenizer
+
+    def chunk(self, doc_ids: list[str], texts: list[str], size: int) -> tuple[list[str], list[str], list[str]]:
+        """Rows for docs cut into `size`-token pieces: (row ids, row texts, parent ids).
+        Row ids are `<doc>#<j>`; a doc's pieces joined give its text back exactly."""
+        ids, rows, parents = [], [], []
+        for d, text in zip(doc_ids, texts):
+            for j, piece in enumerate(chunk_text(text, self.tokenizer, size)):
+                ids.append(f"{d}#{j}")
+                rows.append(piece)
+                parents.append(d)
+        return ids, rows, parents
+
     def embed_corpus(self, dataset: Dataset, cache_dir: Path | None = None) -> RetrievalState:
         doc_ids = list(dataset.corpus)
         doc_texts = [dataset.corpus[d] for d in doc_ids]
         query_ids = list(dataset.queries)
+        parent_ids = None
+        if self.chunk_size is not None:
+            doc_ids, doc_texts, parent_ids = self.chunk(doc_ids, doc_texts, self.chunk_size)
         doc_embeddings, key = self.embed_texts(dataset.name, doc_ids, doc_texts, cache_dir)
 
         query_texts = [dataset.queries[q] for q in query_ids]
@@ -105,6 +134,7 @@ class Retriever:
             query_ids=query_ids,
             query_texts=query_texts,
             query_embeddings=self.embed_queries(query_texts),
+            parent_ids=parent_ids,
             config={**self.config, "cache_key": key},
         )
 
@@ -159,6 +189,18 @@ class Retriever:
 
         topk_ids, topk_scores = best_chunk_per_doc(index, q, state.parent_ids, k)
         return topk_ids, topk_scores, query_embeddings
+
+
+def chunk_text(text: str, tokenizer, size: int) -> list[str]:
+    """Consecutive pieces of `size` tokens. Each piece runs from its first token to the
+    next piece's first token, so the pieces join back into the text exactly (no overlap,
+    whitespace kept). A text of at most `size` tokens is one piece."""
+    offsets = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True, verbose=False)["offset_mapping"]
+    starts = [offsets[i][0] for i in range(0, len(offsets), size)]
+    if len(starts) <= 1:
+        return [text]
+    starts[0] = 0
+    return [text[a:b] for a, b in zip(starts, starts[1:] + [len(text)])]
 
 
 def load_cached(path: Path, n_rows: int) -> np.ndarray | None:

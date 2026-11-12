@@ -29,7 +29,7 @@ from silent_rag.types import Observation
 # filled in before anything reads the config, so run_id doesn't depend on whether a default was spelled out
 DEFAULTS = {"k": 10, "seed": 0, "alpha": 0.05, "min_drop": 0.0}
 
-DEV_DATASETS = {"nfcorpus"}
+DEV_DATASETS = {"nfcorpus", "mldr_en"}  # MLDR: long docs for F3 (#12), not held out
 HELD_OUT = {"scifact", "fiqa"}
 ALIASES = {"fiqa-2018": "fiqa"}
 

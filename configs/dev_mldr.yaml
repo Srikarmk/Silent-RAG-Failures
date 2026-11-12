@@ -1,0 +1,21 @@
+# F3 on long documents (#12): MLDR English, test queries (800), fixed 20k-doc subsample
+# (data.load_mldr). MLDR is not held out. The clean index is chunked, since that's the
+# right setup for long docs: 256-token chunks score nDCG@10 0.67 here against 0.36 for
+# one vector truncated at 256. F3 makes part of the corpus fall back to one vector.
+datasets: [mldr_en]
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever:
+  revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256
+  chunk_size: 254  # 256 minus [CLS] and [SEP]
+  device: mps  # ~356k chunks to embed; drop this line on a machine without Apple silicon
+  batch_size: 64
+failures:
+  F3_chunk_fallback:
+    injector: F3_chunk_fallback
+    severities: [0.1, 0.3, 0.5, 0.9]
+detectors: [ks_top1, ks_mean10, psi_top1, psi_mean10, qpp_max, qpp_nqc, qpp_gap,
+            domain_classifier_query, domain_classifier_retrieved_docs, re_embed]
+window_size: 100
+trials: 20
+seeds: [0, 1, 2]
