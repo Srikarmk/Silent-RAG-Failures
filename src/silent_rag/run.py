@@ -346,6 +346,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
             for name, det in fitted.items():
                 start = time.perf_counter()
                 score = det.score(window)
+                wall = time.perf_counter() - start
+                uncached = getattr(det, "last_cost_s", None)
                 rows.append(
                     ResultRow(
                         run_id=rid,
@@ -363,7 +365,7 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                         ndcg_drop=drop,
                         harmful=p < alpha and drop >= min_drop,
                         p_value=p,
-                        cost_s=time.perf_counter() - start,
+                        cost_s=wall if uncached is None else float(uncached),
                         # API-based detectors report what this check would cost uncached
                         cost_usd=float(getattr(det, "last_cost_usd", 0.0)),
                     )

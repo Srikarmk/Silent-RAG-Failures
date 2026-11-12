@@ -177,3 +177,55 @@ def test_ollama_client_sends_the_same_prompt_and_schema_and_reads_the_reply(monk
     assert sent["messages"][0] == {"role": "system", "content": judge.SYSTEM}
     j = judge.parse(msg, "ollama:qwen3:8b")
     assert j.relevant is True and j.input_tokens == 420 and j.cost_usd == 0.0
+
+
+# cost in seconds (#27)
+
+
+class SlowClient(FakeClient):
+    """Each request takes a fixed, measurable time."""
+
+    def create(self, **params):
+        import time
+        time.sleep(0.01)
+        return super().create(**params)
+
+
+def test_a_cached_rerun_reports_the_same_seconds_as_judging(monkeypatch):
+    load_plugins()
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setattr(LLMJudge, "client", SlowClient())
+    first = run({"live": True, "queries": 3, "depth": 2})
+    assert (first.cost_s >= 0.01).all()  # at least one uncached request's worth per check
+    monkeypatch.setattr(LLMJudge, "client", None)
+    again = run({"live": False, "queries": 3, "depth": 2})  # every pair cached
+    assert np.allclose(again.cost_s.to_numpy(), first.cost_s.to_numpy())
+
+
+def test_pairs_without_a_recorded_time_give_nan_not_zero(fake_judge):
+    run({"live": True})
+    cache = judge.Cache()
+    cache.db.execute("UPDATE judgements SET seconds = NULL")
+    cache.db.commit()
+    again = run({"live": False})
+    assert again.cost_s.isna().all()
+
+
+def test_an_old_cache_gets_the_seconds_column(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE judgements (key TEXT PRIMARY KEY, model TEXT, relevant INTEGER, "
+               "input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, created REAL)")
+    db.execute("INSERT INTO judgements VALUES ('k', 'm', 1, 10, 2, 0.0, 0.0)")
+    db.commit()
+    db.close()
+    got = judge.Cache(path).get(["k"])["k"]
+    assert got.relevant is True and got.seconds is None
+    judge.Cache(path).put("m", {"k2": judge.Judgement(False, 1, 1, 0.0, 0.5)})
+    assert judge.Cache(path).get(["k2"])["k2"].seconds == 0.5
+
+
+def test_other_detectors_keep_the_wall_clock_time():
+    from silent_rag.detect.base import Detector
+    assert Detector.last_cost_s is None

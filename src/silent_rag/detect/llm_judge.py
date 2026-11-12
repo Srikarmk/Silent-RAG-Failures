@@ -76,7 +76,11 @@ class LLMJudge(Detector):
         verdicts = [got[k].relevant for k in keys if got[k].relevant is not None]
         if not verdicts:
             raise RuntimeError("llm_judge: the model gave no verdict for any pair in this window")
-        return 1.0 - sum(verdicts) / len(verdicts), sum(got[k].cost_usd for k in set(keys))
+        unique = [got[k] for k in set(keys)]
+        # what judging this window from scratch takes; NaN (unknown, not free) if a pair came from a batch or an older cache row
+        seconds = float("nan") if any(j.seconds is None for j in unique) else sum(j.seconds for j in unique)
+        self.last_cost_s = seconds
+        return 1.0 - sum(verdicts) / len(verdicts), sum(j.cost_usd for j in unique)
 
     def fit(self, reference: Observation) -> None:
         self.reference_score_, _ = self._judge(reference)

@@ -18,6 +18,7 @@ which #26 requires before the judge is trusted as a reference.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import sqlite3
@@ -75,6 +76,7 @@ class Judgement:
     input_tokens: int
     output_tokens: int
     cost_usd: float
+    seconds: float | None = None  # how long the request took; None for batch results and older cache rows
 
 
 def key(model: str, query: str, doc: str) -> str:
@@ -128,24 +130,28 @@ class Cache:
             "CREATE TABLE IF NOT EXISTS judgements (key TEXT PRIMARY KEY, model TEXT, relevant INTEGER, "
             "input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, created REAL)"
         )
+        # added later: what each judgement took, so a cached check can still report its real cost (#27)
+        if "seconds" not in {r[1] for r in self.db.execute("PRAGMA table_info(judgements)")}:
+            self.db.execute("ALTER TABLE judgements ADD COLUMN seconds REAL")
 
     def get(self, keys: list[str]) -> dict[str, Judgement]:
         out = {}
         for i in range(0, len(keys), 500):
             chunk = keys[i:i + 500]
             rows = self.db.execute(
-                f"SELECT key, relevant, input_tokens, output_tokens, cost_usd FROM judgements "
+                f"SELECT key, relevant, input_tokens, output_tokens, cost_usd, seconds FROM judgements "
                 f"WHERE key IN ({','.join('?' * len(chunk))})", chunk).fetchall()
-            for k, rel, ti, to, c in rows:
-                out[k] = Judgement(None if rel is None else bool(rel), ti, to, c)
+            for k, rel, ti, to, c, sec in rows:
+                out[k] = Judgement(None if rel is None else bool(rel), ti, to, c, sec)
         return out
 
     def put(self, model: str, items: dict[str, Judgement]) -> None:
         now = time.time()
         self.db.executemany(
-            "INSERT OR REPLACE INTO judgements VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(k, model, None if j.relevant is None else int(j.relevant), j.input_tokens, j.output_tokens, j.cost_usd, now)
-             for k, j in items.items()])
+            "INSERT OR REPLACE INTO judgements (key, model, relevant, input_tokens, output_tokens, cost_usd, "
+            "created, seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(k, model, None if j.relevant is None else int(j.relevant), j.input_tokens, j.output_tokens, j.cost_usd,
+              now, j.seconds) for k, j in items.items()])
         self.db.commit()
 
 
@@ -198,7 +204,9 @@ def judge_live(pairs: list[tuple[str, str]], model: str, cache: Cache, client=No
         client = client or make_client(model)
         new = {}
         for k, (q, d) in todo.items():
-            new[k] = parse(client.messages.create(**params(model, q, d, effort)), model)
+            start = time.perf_counter()
+            reply = client.messages.create(**params(model, q, d, effort))
+            new[k] = dataclasses.replace(parse(reply, model), seconds=time.perf_counter() - start)
             if len(new) % 50 == 0:
                 cache.put(model, new)
                 print(f"judged {len(new)}/{len(todo)}", flush=True)
