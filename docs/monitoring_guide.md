@@ -22,7 +22,62 @@ A practical guide for teams running RAG: what to watch, which check catches whic
 
 ## Embedding detectors, ground truth, baseline
 
-**TODO (Jenna).** Including how "harmful" is defined (`min_drop`, #52).
+*Owner: Jenna.*
+
+**Retrieval baseline** (#5)
+
+We use one fixed baseline to measure retrieval degradation:
+
+- Model: `multi-qa-MiniLM-L6-cos-v1`, pinned to a specific revision
+- Input: title + text, truncated at 256 tokens, no chunking
+- Retrieval: exact cosine similarity, top 10
+
+On NFCorpus, clean nDCG@10 is **0.292** (95% CI: 0.259–0.325). Using 256 instead of 512 tokens made no significant difference across our three datasets (#50).
+
+We use windows of 100 queries and compare each window against a clean reference. The goal is to evaluate monitoring methods, not optimize retrieval performance.
+
+**Ground truth**
+
+A window is considered harmful when:
+
+- The nDCG@10 drop is statistically significant (paired bootstrap, p < 0.05)
+- The drop is at least `min_drop`
+
+This requires relevance labels, which are only used for evaluation. Our detectors do not have access to these labels.
+
+**Domain classifiers** (#21)
+
+We tested two classifiers to identify changes in queries and retrieved documents.
+
+The main finding is that **detecting a change does not mean detecting degradation**.
+
+The classifiers use cross-validated AUROC to measure how different the current window is from the reference. We then evaluate whether those scores can separate harmful and harmless windows.
+
+| Retrieved-document classifier (AUROC) | Clean only | Including controls |
+|---|---:|---:|
+| F1 MiniLM | 0.97 | 0.63 |
+| F1 bge-small | 0.61 | 0.34 |
+| F2 distractors | 0.95 | 0.41 |
+
+*Development results, `min_drop = 0.02` (#79).*
+
+Performance drops when harmless changes are included. The document classifier also triggers on 100% of full model swaps, even though they do not hurt retrieval (*dev*, #79).
+
+The query classifier does not detect F1 or F2 because those failures do not change the queries.
+
+**Recommendation:** Use the document classifier to flag changes that need further checks, not as a quality alarm by itself. The query classifier is more useful for checking whether user traffic has shifted.
+
+**Choosing `min_drop`** (#52)
+
+We agreed on `min_drop = 0.02` for the main evaluation, with `0.01` as a sensitivity check for F2. The config update is still pending.
+
+At 0.02, none of the negative-control windows were labelled harmful in the development run. But this does not prove equivalence within a defined margin. That requires a separate equivalence test.
+
+The main trade-off is F2. Its damage is real but small. At `min_drop = 0.02`, only 0%, 5%, and 24% of F2 windows are labelled harmful at severities 0.1, 0.5, and 0.9. At 0.01, those rates increase to 0%, 66%, and 80% (*dev*, #52).
+
+A higher threshold can also make AUROC look better by excluding harder cases. We should always report the number of harmful windows alongside detector performance.
+
+Finally, our 100-query window detected a drop of around 0.06 in 80% of trials under the 25% churn setup (#50). This is specific to that experiment, but it shows why detecting smaller drops remains difficult.
 
 ## The re-embedding check
 
