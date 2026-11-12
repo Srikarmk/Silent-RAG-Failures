@@ -151,7 +151,7 @@ pytest
 
 On Windows (PowerShell), activate with `.venv\Scripts\Activate.ps1` instead of `source .venv/bin/activate`. If PowerShell refuses to run the script, allow it for the current session first with `Set-ExecutionPolicy -Scope Process RemoteSigned`.
 
-On a Mac, if anything that uses both faiss and torch exits with no error, prefix commands with `KMP_DUPLICATE_LIB_OK=TRUE OMP_NUM_THREADS=1`.
+On a Mac, faiss and torch together segfault (exit 139, no error message) unless OpenMP runs one thread. `import silent_rag` sets `OMP_NUM_THREADS=1` and `KMP_DUPLICATE_LIB_OK=TRUE` for you on macOS, unless you've set them yourself. A script or notebook that imports faiss or torch *before* `silent_rag` still needs them set first.
 
 **Run**
 
