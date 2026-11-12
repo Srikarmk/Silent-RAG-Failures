@@ -113,7 +113,7 @@ Finally, our 100-query window detected a drop of around 0.06 in 80% of trials un
   | `combined_scores` alone | 39% | 13.3% |
   | `combined_scores` → judge | **54%** | **5.2%** |
 
-  No false alarms on clean windows. The ones that remain are all on query-topic shifts: an absolute-quality judge reads harder questions as worse retrieval.
+  No false alarms on clean windows. Most of the rest (11 of 14) are on query-topic shifts, where an absolute-quality judge reads harder questions as worse retrieval. The other 3 are on a full model swap and on mixed truncation.
 - **The judge needs a big enough sample.** With 10 queries × top 5 documents per window it was too noisy (AUROC 0.74 on F1). With 100 × 5 it separates F1 from clean at 0.90–0.99 (*dev*).
 - **Cost.** The judge runs on about a third of windows, so the pair costs about a third of judging every window. On our machine with a free local model (qwen3:30b-a3b) that's about 107 s per window if nothing is cached (*dev*, #27). In practice the same question-document pairs repeat, so a cache cuts that a lot.
 - **What it doesn't fix.** Small damage (F1 at 10% of the index) and distractor documents (F2) stay mostly undetected. The judge averages over too many pairs to see a few displaced documents.
