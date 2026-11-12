@@ -55,7 +55,7 @@ def test_false_alarms_on_controls_near_the_clean_rate():
 
 def test_report_has_every_section():
     text = R.report(table(), min_drops=(0.02,), n_boot=50)
-    for part in ("# Results: run r1", "## min_drop 0.02", "How often", "AUROC", "False alarms"):
+    for part in ("# Results: run r1", "## Cost per check", "## min_drop 0.02", "How often", "AUROC", "False alarms"):
         assert part in text
 
 
@@ -64,3 +64,12 @@ def test_report_refuses_mixed_runs():
     df.loc[df.index[:5], "run_id"] = "r2"
     with pytest.raises(SystemExit, match="one run per report"):
         R.report(df)
+
+
+def test_cost_table_counts_unknown_times():
+    df = table()
+    df.loc[df.detector.eq("b"), "cost_s"] = 0.002
+    df.loc[df.index[df.detector.eq("b")][:3], "cost_s"] = np.nan
+    t = R.cost_table(df).set_index("detector")
+    assert t.loc["b", "median ms"] == pytest.approx(2.0) and t.loc["b", "unknown"] == 3
+    assert t.loc["a", "unknown"] == 0

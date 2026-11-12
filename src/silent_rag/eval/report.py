@@ -14,6 +14,10 @@ table, so any min_drop works on one run):
    gives 5% false alarms on this run's clean windows, and the earliest severity it
    reliably detects at that threshold.
 
+Before those, the cost of one check per detector (median, p90 and max of `cost_s`, and
+`cost_usd` per check), which doesn't depend on min_drop. A detector that caches its work
+reports what the check takes uncached; NaN means that time wasn't recorded.
+
 The threshold is set on the clean windows of the same run, so (3) says how a detector
 calibrated on its own clean traffic behaves, which needs no labels. Use one run_id per
 report; a table with several is refused.
@@ -85,6 +89,22 @@ def alarm_table(df: pd.DataFrame, rate: float = 0.05) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def cost_table(df: pd.DataFrame) -> pd.DataFrame:
+    def ms(x):
+        return x * 1000
+
+    g = df.groupby("detector")
+    t = pd.DataFrame({
+        "checks": g.size(),
+        "median ms": g.cost_s.median().map(ms),
+        "p90 ms": g.cost_s.quantile(0.9).map(ms),
+        "max ms": g.cost_s.max().map(ms),
+        "unknown": g.cost_s.apply(lambda c: int(c.isna().sum())),
+        "usd per check": g.cost_usd.mean(),
+    }).sort_values("median ms")
+    return t.reset_index()
+
+
 def fmt(x) -> str:
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return "–"
@@ -106,6 +126,8 @@ def report(df: pd.DataFrame, min_drops=(0.0, 0.02, 0.06), n_boot: int = 1000) ->
            f"{', '.join(sorted(df.dataset.unique()))}, model {meta.model}, window {meta.window_size}, "
            f"seeds {sorted(df.seed.unique().tolist())}, {df.trial.nunique()} trials per condition, "
            f"{df.detector.nunique()} detectors."]
+    out.append("\n## Cost per check\n")
+    out.append(markdown(cost_table(df)))
     for md in min_drops:
         d = relabel(df, md)
         out.append(f"\n## min_drop {md}\n\n### How often each condition is harmful\n")
