@@ -86,3 +86,29 @@ def summary(table: pd.DataFrame) -> pd.Series:
     for option in ("stage1", "stage2", "pair"):
         out[f"{option}_cost_s"] = float((table[f"cost_{option}_s"] * w).sum() / w.sum())
     return pd.Series(out)
+
+
+def gated(df: pd.DataFrame, judge_threshold: float, detector: str = "two_stage", alpha: float = 0.05,
+          min_drop: float = 0.0) -> tuple[pd.DataFrame, pd.Series]:
+    """Rates for a run of the gated `two_stage` detector, where stage 2 only ran on the
+    windows stage 1 flagged (score > 0) and every other window scored 0.
+
+    A window alarms when its score is above `judge_threshold`, the judge's threshold set
+    on clean windows. Per condition: how many windows stage 1 flagged (so were judged) and
+    how many alarmed; harmful failures are scored on their harmful windows only, as in
+    `evaluate`. The summary pools windows: detection over every harmful window, false
+    alarms over every clean and harmless-control window."""
+    rows = df[df.detector.eq(detector)].copy()
+    if rows.empty:
+        raise ValueError(f"results have no rows for {detector!r}")
+    rows["harmful"] = (rows.p_value < alpha) & (rows.ndcg_drop >= min_drop)
+    rows = rows[~rows.expected_harmful | rows.harmful]
+    rows["judged"] = rows.score > 0
+    rows["alarm"] = rows.score > judge_threshold
+    table = rows.groupby(["failure", "severity"]).agg(
+        expected_harmful=("expected_harmful", "first"), windows=("alarm", "size"),
+        judged=("judged", "mean"), alarm=("alarm", "mean"), cost_s=("cost_s", "median"))
+    harm, ok = rows[rows.expected_harmful], rows[~rows.expected_harmful]
+    summary = pd.Series({"detection": harm.alarm.mean(), "false_alarm": ok.alarm.mean(),
+                         "judged": rows.judged.mean(), "harmful_windows": len(harm), "harmless_windows": len(ok)})
+    return table, summary

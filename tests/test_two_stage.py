@@ -64,3 +64,34 @@ def test_evaluation_needs_test_seeds_and_known_detectors():
         two_stage.evaluate(wide, "cheap", "check", calibration_seeds=range(6))
     with pytest.raises(ValueError, match=r"no rows for \['llm_judge'\]"):
         two_stage.scores(results(), ["cheap", "llm_judge"])
+
+
+def gated_rows():
+    """two_stage scores as the gated detector writes them: 0 when stage 1 didn't flag."""
+    rows = []
+    for failure, harm, drop, scores in [
+        ("clean", False, 0.0, [0, 0, 0.70, 0.72]),        # two judged, neither above 0.75
+        ("F1_x", True, 0.05, [0.80, 0.90, 0, 0.74]),     # three judged, two alarm
+        ("F1_x", True, 0.001, [0.95, 0, 0, 0]),          # tiny drop: not harmful at min_drop 0.02
+        ("H_y", False, 0.0, [0.76, 0, 0, 0]),            # one false alarm
+    ]:
+        for t, s in enumerate(scores):
+            rows.append(dict(run_id="r", dataset="nfcorpus", seed=7, failure=failure, severity=0.5 if harm else 0.0,
+                             trial=t + (10 if drop == 0.001 else 0), detector="two_stage", score=s,
+                             cost_s=0.01 if s == 0 else 300.0, expected_harmful=harm, p_value=0.01 if drop else 0.5,
+                             ndcg_drop=drop))
+    return pd.DataFrame(rows)
+
+
+def test_gated_counts_judged_and_alarmed_windows():
+    table, summary = two_stage.gated(gated_rows(), judge_threshold=0.75, min_drop=0.02)
+    f1 = table.loc[("F1_x", 0.5)]
+    assert f1.windows == 4 and f1.judged == 0.75 and f1.alarm == 0.5
+    assert table.loc[("clean", 0.0)].alarm == 0 and table.loc[("H_y", 0.0)].alarm == 0.25
+    assert summary.detection == 0.5 and summary.false_alarm == 1 / 8
+    assert summary.harmful_windows == 4 and summary.harmless_windows == 8
+
+
+def test_gated_needs_the_detector():
+    with pytest.raises(ValueError, match="no rows"):
+        two_stage.gated(gated_rows(), 0.75, detector="other")
