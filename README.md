@@ -149,6 +149,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
+`pip install -e ".[dev]"` takes the newest releases. For the exact versions we tested with, install `requirements-lock.txt` first (`pip install -r requirements-lock.txt && pip install -e . --no-deps`). A fresh install a day newer than our dev environment (torch 2.15 vs 2.14, newer transformers, pandas and datasets) gave identical nDCG drops and p-values on `configs/dev.yaml`.
+
 On Windows (PowerShell), activate with `.venv\Scripts\Activate.ps1` instead of `source .venv/bin/activate`. If PowerShell refuses to run the script, allow it for the current session first with `Set-ExecutionPolicy -Scope Process RemoteSigned`.
 
 On a Mac, faiss and torch together segfault (exit 139, no error message) unless OpenMP runs one thread. `import silent_rag` sets `OMP_NUM_THREADS=1` and `KMP_DUPLICATE_LIB_OK=TRUE` for you on macOS, unless you've set them yourself. A script or notebook that imports faiss or torch *before* `silent_rag` still needs them set first.
@@ -157,9 +159,13 @@ On a Mac, faiss and torch together segfault (exit 139, no error message) unless 
 
 ```bash
 python -m silent_rag.run --list                                # registered failures and detectors
+python -m silent_rag.run --config configs/smoke.yaml           # end-to-end check, ~2-5 minutes on a laptop CPU
 python -m silent_rag.run --config configs/dev.yaml             # development run, NFCorpus only
 python -m silent_rag.run --config configs/final.yaml --final   # held-out run, SciFact + FiQA
+python -m silent_rag.eval.report results/dev.parquet           # the tables, as Markdown
 ```
+
+`configs/dev.yaml` took 26 minutes from a fresh clone with empty caches (M5 Pro, CPU), downloads included. The report prints, for each `min_drop` (0, 0.02 and 0.06 by default, recomputed from the table): how often each condition is harmful, AUROC for every detector and failure with 95% seed CIs, and each detector's false alarms on the negative controls and earliest detected severity, at the threshold that gives 5% false alarms on the run's clean windows. `--out report.md` writes it to a file. CI runs `configs/smoke.yaml` and the report on every pull request, on a fresh Ubuntu machine.
 
 Datasets (`nfcorpus`, `scifact`, `fiqa`) download from the Hugging Face Hub at pinned revisions. Corpus embeddings are cached under `cache/embeddings/` (or `$SILENT_RAG_CACHE/embeddings/`), keyed on the model, its revision, the settings that change the vectors and the corpus text itself, so only the first run of a setup embeds the corpus. The runner refuses SciFact and FiQA unless `--final` is passed.
 
