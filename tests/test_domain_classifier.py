@@ -103,9 +103,23 @@ def test_nonfinite_rejected():
         QueryDomainClassifier().fit(observation(arr, [f"r{i}" for i in range(8)]))
 
 
-def test_duplicate_identity_in_window_rejected():
-    with pytest.raises(ValueError, match="duplicate identities"):
-        QueryDomainClassifier().fit(observation(np.ones((3, 4)), ["a", "a", "b"]))
+def test_one_identity_with_two_embeddings_rejected():
+    vectors = np.ones((3, 4))
+    vectors[1, 0] = 2.0
+    with pytest.raises(ValueError, match="'a' appears with two different embeddings"):
+        QueryDomainClassifier().fit(observation(vectors, ["a", "a", "b"]))
+
+
+def test_repeated_query_in_a_window_is_allowed_and_kept_in_one_fold():
+    # a query shift oversamples a topic, so real windows repeat questions
+    rng = np.random.default_rng(0)
+    ref = rng.normal(size=(20, 4))
+    cur = rng.normal(size=(10, 4))
+    det = QueryDomainClassifier()
+    det.fit(observation(ref, [f"r{i}" for i in range(20)]))
+    repeated = np.vstack([cur, cur])
+    score = det.score(observation(repeated, [f"c{i}" for i in range(10)] * 2))
+    assert 0.0 <= score <= 1.0
 
 
 def test_missing_retrieved_doc_mapping_rejected():

@@ -111,6 +111,22 @@ def load_mldr(split: str = "test", fetch=_hub_file) -> Dataset:
     return Dataset(name="mldr_en", corpus=corpus, queries=queries, qrels=qrels)
 
 
+# Corpora used only as a source of distractor documents for F2_distractors.
+# Never a held-out set and never a dataset we evaluate on, so adding them can't leak anything.
+DISTRACTOR_SOURCES = {
+    "arguana": {"repo": "BeIR/arguana", "revision": "9bcf8fc0320c4e3860e25b8b85fa205fcdd7078f"},
+}
+
+
+def load_distractors(name: str) -> dict[str, str]:
+    """doc_id -> "title text" for a distractor corpus, pinned like the BEIR loaders."""
+    from datasets import load_dataset
+
+    src = DISTRACTOR_SOURCES[name]
+    corpus = load_dataset(src["repo"], "corpus", split="corpus", revision=src["revision"])
+    return {str(d["_id"]): doc_text(d["title"], d["text"]) for d in corpus}
+
+
 def doc_text(title: str | None, text: str | None) -> str:
     return f"{(title or '').strip()} {(text or '').strip()}".strip()
 

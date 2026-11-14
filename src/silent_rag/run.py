@@ -155,6 +155,9 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
         if key in others:
             raise SystemExit(f"{label}: is the registered name of {others[key]!r}, pick another label")
         check_severities({label: sevs})
+        allowed = INJECTORS[name].severities
+        if allowed is not None and any(s not in allowed for s in sevs):
+            raise SystemExit(f"{label}: {name} only runs at severities {list(allowed)}, got {sevs}")
         # bind, don't construct: the runner makes exactly one injector per label, later
         try:
             inspect.signature(INJECTORS[name]).bind(**params)
@@ -217,6 +220,36 @@ def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
             "injector changed query_texts but kept the clean query_embeddings, set them to None"
         )
     return damaged.query_embeddings[idx]
+
+
+def asked_queries(clean, damaged, idx, reference_ids: set[str]) -> list[str]:
+    """The query id at each window position after the injector ran.
+
+    An injector that shifts traffic (a query shift, a control that oversamples a topic)
+    may put another query of the dataset at a position, with its text. Ground truth then
+    pairs the question actually asked with its own clean result. A question from outside
+    the dataset has no clean result and no qrels, which is the open reference-standard
+    question in #13, so it is refused rather than scored against the wrong question.
+    """
+    clean_text = dict(zip(clean.query_ids, clean.query_texts))
+    asked = [damaged.query_ids[i] for i in idx]
+    unknown = sorted({q for q in asked if q not in clean_text})
+    if unknown:
+        raise RuntimeError(
+            f"injector asked {len(unknown)} queries that aren't in the dataset (e.g. {unknown[0]!r}); "
+            "they have no qrels, so there is no ground truth for them yet (#13)"
+        )
+    leaked = sorted(set(asked) & reference_ids)
+    if leaked:
+        raise RuntimeError(
+            f"injector asked {len(leaked)} reference-window queries (e.g. {leaked[0]!r}); "
+            "use the ids in Injector.query_pool, the detectors were fit on the others"
+        )
+    wrong = [i for i in idx if damaged.query_texts[i] != clean_text[damaged.query_ids[i]]]
+    if wrong:
+        i = wrong[0]
+        raise RuntimeError(f"position {i} has query id {damaged.query_ids[i]!r} but another query's text")
+    return asked
 
 
 def read_only(state):
@@ -292,10 +325,12 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
 
     clean_deep = deep(state, clean_q)
     clean_ndcg = per_query_ndcg(clean_ids, state.query_ids, ds.qrels, k)
+    clean_by_id = dict(zip(state.query_ids, clean_ndcg))
 
     # The reference window the detectors are fit on never overlaps the windows they score.
     order = np.random.default_rng(seed).permutation(len(state.query_ids))
     ref_idx, pool = order[:window_size], order[window_size:]
+    ref_ids = {state.query_ids[i] for i in ref_idx}
     if len(pool) < window_size:
         raise SystemExit(f"{ds.name}: {len(order)} queries is too few for two windows of {window_size}")
 
@@ -313,6 +348,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
     made = {}
     for label, (name, _, kwargs) in failures.items():
         made[label] = INJECTORS[name](**kwargs)
+        # the queries an injector may move traffic to: never the reference window's
+        made[label].query_pool = [state.query_ids[i] for i in pool]
         made[label].attach(retriever, state)
 
     conditions = [("clean", 0.0)] + [(f, s) for f, (_, sevs, _) in failures.items() for s in sevs]
@@ -336,9 +373,10 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                 )
                 deep_scores = deep(damaged, q_emb)
 
-            # qrels are keyed by the clean query ids. What this means for F4 is still open (#13).
-            ndcg = per_query_ndcg(topk_ids, [state.query_ids[i] for i in idx], ds.qrels, k)
-            drop, p = paired_bootstrap(clean_ndcg[idx], ndcg, seed=trial)
+            # ground truth pairs each question actually asked with its own clean result (#13)
+            asked = asked_queries(state, damaged, idx, ref_ids)
+            ndcg = per_query_ndcg(topk_ids, asked, ds.qrels, k)
+            drop, p = paired_bootstrap(np.array([clean_by_id[q] for q in asked]), ndcg, seed=trial)
             window = observe(
                 damaged, idx, topk_ids, topk_scores, q_emb, docs_of(damaged, state, clean_docs), deep_scores
             )
