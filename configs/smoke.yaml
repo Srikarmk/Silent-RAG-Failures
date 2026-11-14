@@ -1,0 +1,20 @@
+# End-to-end smoke test (#34): the real pipeline on NFCorpus, small enough for CI.
+# Downloads NFCorpus and two MiniLM models (~180 MB), embeds 3.6k docs twice on CPU.
+#   python -m silent_rag.run --config configs/smoke.yaml
+#   python -m silent_rag.eval.report results/smoke.parquet
+# Not a result: two trials of one seed say nothing about detection.
+datasets: [nfcorpus]
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever:
+  revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256
+failures:
+  F1_partial_upgrade_minilm:
+    injector: F1_partial_upgrade
+    severities: [0.9]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+detectors: [ks_top1, qpp_max, re_embed]
+window_size: 100
+trials: 2
+seed: 0
