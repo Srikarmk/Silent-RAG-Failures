@@ -1,0 +1,50 @@
+# Two-stage monitor (#74) with combined_scores (#75) as stage 1 and the LLM judge (#26)
+# as stage 2, gated: the judge runs only on windows stage 1 flags. Test seeds 7-9 only;
+# both thresholds come from clean windows of seeds 0-2:
+#   stage1_threshold -0.8155: 20% false alarms on combined_scores, dev_full clean windows
+#   judge alarm threshold 0.7622: 5% false alarms on the 500-pair judge (two_stage_judge100)
+# Same windows as dev_full (trials 0-9). F1 only up to 0.5: above it every detector
+# already catches every window. NFCorpus only; local model, $0.
+datasets: [nfcorpus]
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever:
+  revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256  # title + text truncated at 256 tokens, no chunking (#5)
+failures:
+  F1_partial_upgrade_minilm:
+    injector: F1_partial_upgrade
+    severities: [0.1, 0.3, 0.5]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  F1_partial_upgrade_bge:
+    injector: F1_partial_upgrade
+    severities: [0.1, 0.3, 0.5]
+    alt_model: BAAI/bge-small-en-v1.5
+    alt_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  F2_distractors_arguana:
+    injector: F2_distractors
+    severities: [0.1, 0.5, 0.9]
+    source: arguana
+  H_mixed_truncation_512:
+    injector: H_mixed_truncation
+    severities: [0.1, 0.5, 0.9]
+    max_seq_length: 512
+  H_full_swap_minilm:
+    injector: H_full_swap
+    severities: [1.0]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  H_full_swap_bge:
+    injector: H_full_swap
+    severities: [1.0]
+    alt_model: BAAI/bge-small-en-v1.5
+    alt_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  H_query_topic_shift:
+    injector: H_query_topic_shift
+    severities: [0.1, 0.5, 0.9]
+detectors:
+  - combined_scores
+  - two_stage: {stage1_threshold: -0.8155, queries: 100, live: true}
+window_size: 100
+trials: 10
+seeds: [7, 8, 9]

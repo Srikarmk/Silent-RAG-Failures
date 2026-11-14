@@ -1,0 +1,33 @@
+# Two-stage monitor (#74): the LLM judge on every query of the window (100 x top 5 =
+# 500 pairs), against 10 x 5 in two_stage_judge.yaml, to see whether a bigger sample
+# makes stage 2 usable. Same windows as configs/dev_full.yaml (trials 0-9).
+# Seeds 0-2 calibrate, 7-9 test. NFCorpus only, local model, cached.
+datasets: [nfcorpus]
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever:
+  revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256  # title + text truncated at 256 tokens, no chunking (#5)
+failures:
+  F1_partial_upgrade_minilm:
+    injector: F1_partial_upgrade
+    severities: [0.5]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  F1_partial_upgrade_bge:
+    injector: F1_partial_upgrade
+    severities: [0.5]
+    alt_model: BAAI/bge-small-en-v1.5
+    alt_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  H_full_swap_bge:
+    injector: H_full_swap
+    severities: [1.0]
+    alt_model: BAAI/bge-small-en-v1.5
+    alt_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  H_query_topic_shift:
+    injector: H_query_topic_shift
+    severities: [0.9]
+detectors:
+  - llm_judge: {live: true, queries: 100}
+window_size: 100
+trials: 10
+seeds: [0, 1, 2, 7, 8, 9]
