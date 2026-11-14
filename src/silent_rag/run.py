@@ -446,9 +446,17 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
         hashed.pop("seed")
     rid = run_id(hashed)
     per_seed = {key: v for key, v in cfg.items() if key != "seeds"}
+    # load every dataset first: checks that need the data run before anything is embedded
+    loaded = {name: loader(name) for name in datasets}
+    for name, ds in loaded.items():
+        for label, (injector, sevs, kwargs) in failures.items():
+            try:
+                INJECTORS[injector].check_dataset(kwargs, sevs, ds)
+            except ValueError as e:
+                raise SystemExit(f"{label} on {name}: {e}") from None
     rows = []
     for name in datasets:
-        ds, retriever = loader(name), make_retriever()
+        ds, retriever = loaded[name], make_retriever()
         for seed in seeds:
             rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, failures, rid=rid)
     return to_frame(rows)
