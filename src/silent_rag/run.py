@@ -12,6 +12,10 @@ import importlib
 import inspect
 import json
 import pkgutil
+import platform
+import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -65,6 +69,58 @@ def check_final_revision(run_cfg: dict, final: bool) -> None:
             "--final needs the clean model's revision pinned to a 40-character lowercase "
             f"commit hash, got {run_cfg['revision']!r}"
         )
+
+
+ROOT = Path(__file__).resolve().parents[2]
+FINAL_TAG = re.compile(r"final-v[0-9]+")
+FROZEN = ("src", "configs")  # what decides the numbers: the code and every config, weights included
+
+
+def git(*args: str, repo: Path = ROOT) -> str:
+    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"--final needs the git checkout the code runs from; `git {' '.join(args)}` failed: "
+                         f"{out.stderr.strip()}")
+    return out.stdout.strip()
+
+
+def check_frozen(config_path: str, out: Path, git=git, root: Path = ROOT) -> dict:
+    """The held-out run happens once (#29), so it has to run from frozen, tagged code.
+
+    Checked in the checkout this code was imported from, not the current directory, so
+    a worktree or a PYTHONPATH can't run other code than the one that's tagged:
+    - nothing under src/ or configs/ differs from HEAD, untracked files included
+    - the config is a committed file under configs/
+    - HEAD carries a final-v<N> tag
+    - the output file doesn't exist yet, so a second run can't overwrite the first
+    Returns what the sidecar records about the code."""
+    dirty = git("status", "--porcelain", "--untracked-files=all", "--", *FROZEN)
+    if dirty:
+        raise SystemExit(f"--final needs src/ and configs/ committed, these differ from HEAD:\n{dirty}")
+    cfg = Path(config_path).resolve()
+    if not cfg.is_relative_to(root / "configs"):
+        raise SystemExit(f"--final needs the config under {root / 'configs'}, got {cfg}")
+    tags = [t for t in git("tag", "--points-at", "HEAD").split() if FINAL_TAG.fullmatch(t)]
+    if not tags:
+        raise SystemExit("--final needs HEAD tagged final-v<N> (e.g. `git tag final-v1`); tag the frozen commit first")
+    for path in (out, out.with_suffix(".json")):
+        if path.exists():
+            raise SystemExit(f"{path} already exists; the held-out run happens once, refusing to overwrite it")
+    return {"commit": git("rev-parse", "HEAD"), "tag": sorted(tags)[-1],
+            "config": str(cfg.relative_to(root)), "config_sha1": hashlib.sha1(cfg.read_bytes()).hexdigest()}
+
+
+def environment() -> dict:
+    from importlib.metadata import PackageNotFoundError, version
+
+    def v(pkg):
+        try:
+            return version(pkg)
+        except PackageNotFoundError:
+            return None
+
+    return {"python": sys.version.split()[0], "platform": platform.platform(), "machine": platform.machine(),
+            "packages": {p: v(p) for p in ("numpy", "torch", "sentence-transformers", "faiss-cpu", "scikit-learn", "pandas")}}
 
 
 def load_plugins() -> None:
@@ -490,12 +546,19 @@ def main() -> None:
     with open(args.config) as f:
         cfg = yaml.load(f, Loader=UniqueKeyLoader)
     check_datasets(cfg["datasets"], args.final)
+    out = Path(args.out or f"results/{Path(args.config).stem}.parquet")
+    frozen = check_frozen(args.config, out) if args.final else None
+    started = time.time()
 
     df = run(cfg, final=args.final)
-    out = Path(args.out or f"results/{Path(args.config).stem}.parquet")
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
     print(f"wrote {len(df)} rows to {out}")
+    if frozen is not None:
+        side = out.with_suffix(".json")
+        side.write_text(json.dumps({**frozen, "run_ids": sorted(df.run_id.unique().tolist()), "rows": len(df),
+                                    "started": started, "finished": time.time(), **environment()}, indent=2))
+        print(f"wrote what the run used to {side}")
 
 
 if __name__ == "__main__":
