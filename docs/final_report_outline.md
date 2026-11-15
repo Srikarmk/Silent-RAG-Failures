@@ -1,6 +1,6 @@
 # Final report: outline (#33)
 
-Section by section: what goes in, where its numbers come from, and what's still missing. A planning document, not the report. Status as of 2026-11-12.
+Section by section: what goes in, where its numbers come from, and what's still missing. A planning document, not the report. Status as of 2026-11-15.
 
 **Rules from #33**
 - Results come from the held-out run (#29) only. Dev numbers (NFCorpus, MLDR) go in Methods, as the evidence behind design choices, never in Results.
@@ -42,18 +42,18 @@ Status: ✅ (MLDR 🟡 #82)
 - `min_drop` 0.02, with 0.01 as a sensitivity row for F2 (#52). Evidence: no negative control comes out harmful at ≥ 0.02.
 - Window of 100 queries (#4), 20 trials, 10 seeds.
 
-Status: 🟡 `min_drop` still needs Jenna's agreement on #52.
+Status: ✅ `min_drop` 0.02 agreed on #52; setting it in the configs is 🟡 #88.
 
 ### 3.3 Failures
 
 | ID | Failure | Status |
 |---|---|---|
 | F1 | partial embedding upgrade, four partner models | ✅ / 🟡 #79 |
-| F2 | distractor documents | 🟡 #76 |
+| F2 | distractor documents | ✅ #76; severity check for FiQA 🟡 #89 |
 | F2 | stale documents (HoH half) | 🔴 #11, Shane |
 | F3 | chunked index partly falling back to one vector, MLDR only | 🟡 #82 |
 | F4 | query shift outside the corpus | 🔴 #13, waiting on the reference-standard question |
-| F5 | config mismatches | 🔴 #14, Jenna |
+| F5 | config mismatches | 🔴 #14; owner to confirm (assigned to Jenna, the issue says Shane) |
 
 What each costs in nDCG (dev) goes here as design evidence.
 
@@ -62,7 +62,7 @@ What each costs in nDCG (dev) goes here as design evidence.
 - full model swap to MiniLM and to bge
 - in-domain topic shift
 
-Why they matter: AUROC pools them as negatives, so a detector that fires on harmless change is penalized. Status: 🟡 #76.
+Why they matter: AUROC pools them as negatives, so a detector that fires on harmless change is penalized. Status: ✅ #76.
 
 ### 3.5 Detectors
 
@@ -76,7 +76,7 @@ Why they matter: AUROC pools them as negatives, so a detector that fires on harm
 | Canary queries | | 🔴 #24, Alekhya |
 | LLM judge | local model (qwen3:30b-a3b), 100 queries × top 5 | 🟡 #77 |
 | Combined | `combined_scores`, weights trained on NFCorpus | 🟡 #80 |
-| Two-stage | `combined_scores` → judge, with the frozen rule | 🔴 detector written, not yet in a PR |
+| Two-stage | `combined_scores` → judge, with the frozen rule | 🟡 #87 |
 
 ### 3.6 Metrics
 - AUROC with seed-block CIs; negatives are clean windows plus harmless controls.
@@ -123,9 +123,9 @@ A short version of the monitoring guide's recommendation (#32), pointing to the 
 
 ## Before we write: what has to land
 
-1. Open PRs merged: #76–#84.
-2. `min_drop` agreed (#52).
+1. Open PRs merged: #77–#84, #87–#89 (#76 is in).
+2. `min_drop` 0.02 in the configs (agreed on #52, set in #88).
 3. Thresholds rule decided (#29).
-4. F2 stale documents, F4 and F5 in or explicitly cut (#11, #13, #14).
+4. F2 stale documents, F4 and F5 in or explicitly cut (#11, #13, #14), and F5's owner confirmed.
 5. Freeze, tag `final-v1`, run `--final` once (#29, #81).
 6. Heatmap and figures (#30).
