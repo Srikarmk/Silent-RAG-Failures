@@ -41,7 +41,7 @@ failures:
     injector: H_query_topic_shift
     severities: [0.5, 0.9]
 detectors:
-  - llm_judge: {live: true}
+  - llm_judge: {live: true, queries: 10}  # 10 x top 5 = 50 pairs per window; the default is 100
 window_size: 100
 trials: 10
 seeds: [0, 1, 2, 7, 8, 9]
