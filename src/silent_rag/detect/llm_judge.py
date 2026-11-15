@@ -1,7 +1,15 @@
 """llm_judge (#26): an LLM decides whether retrieved documents are relevant, for a
 sample of each window's queries. The score is the share of judged pairs that come
-back irrelevant, so higher means more likely broken, and the clean reference
-window's share is the baseline the score is compared against.
+back irrelevant, so higher means more likely broken. It is an absolute measure of
+quality: nothing is subtracted, and thresholds come from clean windows (#74).
+
+Not relative to the reference window: that is one window of 100 queries, as noisy as
+any other, so subtracting its share nearly doubled the spread on clean windows (sd
+0.028 to 0.049 at 500 pairs) and lowered AUROC on F1 by about 0.1 (#77 review).
+
+The sample size matters. With 10 queries x top 5 (50 pairs) a window's share moves in
+steps of 0.02 and clean windows vary by sd 0.096: AUROC on F1 at 0.5 was 0.66-0.75.
+With 100 queries (500 pairs) it is 0.90-0.99, so 100 is the default.
 
 Unlike the drift detectors this one measures quality, not change, which is what
 the two-stage monitor (#74) needs from its second stage. It is also the only
@@ -27,7 +35,7 @@ class LLMJudge(Detector):
     name = "llm_judge"
     client = None  # tests set a fake; otherwise built on first live call
 
-    def __init__(self, model: str = judge.DEFAULT_MODEL, queries: int = 10, depth: int = 5,
+    def __init__(self, model: str = judge.DEFAULT_MODEL, queries: int = 100, depth: int = 5,
                  effort: str = judge.DEFAULT_EFFORT, live: bool = False, seed: int = 0):
         self.model, self.queries, self.depth = model, queries, depth
         self.effort, self.live, self.seed = effort, live, seed
@@ -52,7 +60,8 @@ class LLMJudge(Detector):
         if window.parent_ids is not None:
             raise ValueError("llm_judge judges whole documents and doesn't handle a chunked index yet")
         text = dict(zip(window.doc_ids, window.doc_texts))
-        # the same sample of positions under every condition: a hash of the window's ids
+        # a hash of the window's query ids, so the same positions whenever the ids are the same; a
+        # condition that moves traffic to other queries (topic shift, F4) samples other positions
         key = zlib.crc32("\n".join(window.query_ids).encode()) ^ self.seed
         order = sorted(range(len(window.query_ids)),
                        key=lambda i: zlib.crc32(f"{i}:{window.query_ids[i]}".encode(), key))[: self.queries]
@@ -83,7 +92,7 @@ class LLMJudge(Detector):
         return 1.0 - sum(verdicts) / len(verdicts), sum(j.cost_usd for j in unique)
 
     def fit(self, reference: Observation) -> None:
-        self.reference_score_, _ = self._judge(reference)
+        """Nothing to fit: the score is absolute, not relative to the reference window."""
 
     def score(self, window: Observation) -> float:
         share, self.last_cost_usd = self._judge(window)

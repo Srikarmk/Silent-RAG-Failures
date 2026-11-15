@@ -229,3 +229,17 @@ def test_an_old_cache_gets_the_seconds_column(tmp_path):
 def test_other_detectors_keep_the_wall_clock_time():
     from silent_rag.detect.base import Detector
     assert Detector.last_cost_s is None
+
+
+def test_fit_judges_nothing_the_score_is_absolute(monkeypatch):
+    """The reference window isn't judged: subtracting its share added noise (#77 review)."""
+    class Refuse:
+        messages = None
+
+        def __getattr__(self, name):
+            raise AssertionError("fit() called the judge")
+
+    det = LLMJudge(live=True)
+    det.client = Refuse()
+    det.fit(object())  # any Observation: fit must not even read it
+    assert det.queries == 100 and not hasattr(det, "reference_score_")
