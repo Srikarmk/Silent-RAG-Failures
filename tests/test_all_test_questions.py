@@ -3,14 +3,18 @@ import pandas as pd
 import pytest
 
 from silent_rag import run as runner
+from silent_rag.detect.base import REGISTRY as DETECTORS
+from silent_rag.detect.base import Detector
 from silent_rag.eval.all_test_questions import (
     mean_ndcg10_drop_all_test_questions_by_severity,
     per_question_ndcg10_by_failure_severity_seed,
+    statistic_all_test_questions_vs_validation_reference_by_severity,
 )
 from silent_rag.eval.ground_truth import bootstrap_ci
 from silent_rag.inject.base import REGISTRY as INJECTORS
 from silent_rag.inject.f1_partial_upgrade import PartialUpgrade
 from silent_rag.pipeline import Retriever
+from silent_rag.types import Dataset
 from test_inject_f1 import ShiftedEncoder
 from test_pipeline import HashEncoder, ScrambleDocs, toy_dataset
 
@@ -132,6 +136,93 @@ def test_seeds_are_averaged_before_the_question_bootstrap():
 def test_unequal_seed_counts_are_an_error():
     with pytest.raises(ValueError, match="different numbers of seeds"):
         mean_ndcg10_drop_all_test_questions_by_severity(per_question({"a": [0.1, 0.3], "b": [0.0]}), BOOT)
+
+
+class Recording(Detector):
+    """Records construction, attach, fit and score; scores a window by its mean top-1 score x scale."""
+    name = "test_recording"
+    events = []
+
+    def __init__(self, scale=1.0):
+        self.scale = scale
+        Recording.events.append(("init", scale))
+
+    def attach(self, retriever):
+        Recording.events.append(("attach", None))
+
+    def fit(self, reference):
+        Recording.events.append(("fit", list(reference.query_ids)))
+
+    def score(self, window):
+        value = self.scale * float(window.topk_scores[:, 0].mean())
+        Recording.events.append(("score", (len(window.query_ids), value)))
+        return value
+
+
+def with_validation(validation_corpus_size=40, shared_questions=()):
+    """Test split: the toy dataset. Validation: 20 other questions over a corpus of the given size,
+    plus any test question ids in shared_questions."""
+    def loader(name, split="test"):
+        if split == "test":
+            return toy_dataset()
+        corpus = toy_dataset(validation_corpus_size).corpus
+        queries = {f"v{i}": f"word{i} topic{i}" for i in range(20)} | {q: "shared" for q in shared_questions}
+        return Dataset("nfcorpus", corpus, queries, {q: {"d0": 1} for q in queries})
+    return loader
+
+
+@pytest.fixture
+def statistic_table(monkeypatch):
+    class Shifted(Retriever):
+        def __init__(self, model, **kw):
+            super().__init__(model, encoder=ShiftedEncoder(), **kw)
+
+    monkeypatch.setattr(PartialUpgrade, "retriever_cls", Shifted)
+    monkeypatch.setitem(DETECTORS, Recording.name, Recording)
+    monkeypatch.setattr(Recording, "events", [])
+    config = {**RUN_CONFIG, "failures": {"F1_shifted": {**RUN_CONFIG["failures"]["F1_shifted"], "severities": [0.5]}},
+              "detectors": [{Recording.name: {"scale": 2.0}}]}
+    table = statistic_all_test_questions_vs_validation_reference_by_severity(
+        config, {}, loader=with_validation(), make_retriever=lambda: Retriever("clean/model", encoder=HashEncoder()))
+    return table, Recording.events
+
+
+def test_statistic_is_built_from_config_attached_then_fitted_on_validation_only(statistic_table):
+    _, events = statistic_table
+    assert [e for e, _ in events[:3]] == ["init", "attach", "fit"] and events[0][1] == 2.0
+    assert events[2][1] == [f"v{i}" for i in range(20)]  # validation questions only
+    scores = [value for e, value in events if e == "score"]
+    assert all(n == 40 for n, _ in scores)  # every scored window is all 40 test questions
+
+
+def test_clean_row_and_range_over_seeds(statistic_table):
+    table, events = statistic_table
+    scores = [value[1] for e, value in events if e == "score"]  # clean first, then seeds 0 and 3
+    clean = table[table.failure == "clean"].iloc[0]
+    assert (clean["severity"], clean["n_seeds"], clean["mean"]) == (0.0, 0, pytest.approx(scores[0]))
+    assert pd.isna(clean["injector"])
+    f1 = table[table.failure == "F1_shifted"].iloc[0]
+    assert (f1["mean"], f1["min"], f1["max"]) == pytest.approx((np.mean(scores[1:]), min(scores[1:]), max(scores[1:])))
+    assert (f1["n_seeds"], f1["injector"], f1["statistic"]) == (2, "F1_partial_upgrade", Recording.name)
+    assert len(table) == 2
+
+
+def test_validation_corpus_must_equal_the_test_corpus(monkeypatch):
+    monkeypatch.setitem(DETECTORS, Recording.name, Recording)
+    with pytest.raises(ValueError, match="validation split's corpus differs"):
+        statistic_all_test_questions_vs_validation_reference_by_severity(
+            {**RUN_CONFIG, "failures": {"F1_shifted": RUN_CONFIG["failures"]["F1_shifted"]},
+             "detectors": [Recording.name]}, {}, loader=with_validation(30),
+            make_retriever=lambda: Retriever("clean/model", encoder=HashEncoder()))
+
+
+def test_test_and_validation_questions_must_not_overlap(monkeypatch):
+    monkeypatch.setitem(DETECTORS, Recording.name, Recording)
+    with pytest.raises(ValueError, match="1 question ids are in both the test and validation splits"):
+        statistic_all_test_questions_vs_validation_reference_by_severity(
+            {**RUN_CONFIG, "failures": {"F1_shifted": RUN_CONFIG["failures"]["F1_shifted"]},
+             "detectors": [Recording.name]}, {}, loader=with_validation(shared_questions=["q7"]),
+            make_retriever=lambda: Retriever("clean/model", encoder=HashEncoder()))
 
 
 def test_held_out_datasets_need_final():

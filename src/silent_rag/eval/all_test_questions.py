@@ -8,6 +8,7 @@ import pandas as pd
 
 from silent_rag import data
 from silent_rag import run as runner
+from silent_rag.detect.base import REGISTRY as DETECTORS
 from silent_rag.eval.ground_truth import bootstrap_ci, per_query_ndcg
 from silent_rag.inject.base import REGISTRY as INJECTORS
 
@@ -65,6 +66,69 @@ def per_question_ndcg10_by_failure_severity_seed(run_config: dict, analysis_conf
                     "n_relevant": [len(r) for r in relevant], "n_relevant_modified": n_modified,
                 }))
     return pd.concat(tables, ignore_index=True)
+
+
+def statistic_all_test_questions_vs_validation_reference_by_severity(
+    run_config: dict, analysis_config: dict, loader=data.load, make_retriever=None, final: bool = False,
+) -> pd.DataFrame:
+    """Each monitoring statistic on all test questions, fitted on all validation questions.
+
+    Statistics are the run config's detectors, built from run.detector_params, attached to the
+    baseline retriever and fitted on the baseline search of the validation split, as the runner
+    does (which fits on a 100-question window instead). Scored on all test questions for the
+    unmodified baseline (failure "clean", severity 0, one value, n_seeds 0) and for every failure
+    label x severity x raw seed, apply(state, severity, seed), as in
+    per_question_ndcg10_by_failure_severity_seed. The test set is compared with the validation
+    set (about 323 vs 324 questions on NFCorpus), so values are not on the 100-question window
+    scale. min and max are the range over seeds, not a confidence interval.
+    """
+    names = runner.check_datasets(run_config["datasets"], final)
+    if len(names) != 1:
+        raise ValueError(f"one dataset per analysis, got {names}")
+    runner.load_plugins()
+    failures = runner.failure_params(run_config.get("failures"))
+    params = runner.detector_params(run_config["detectors"])
+    classes = runner.lookup(DETECTORS, params, "detector")
+    k, depth = run_config.get("k", runner.DEFAULTS["k"]), run_config.get("score_depth")
+
+    ds, reference_ds = loader(names[0]), loader(names[0], split="validation")
+    if reference_ds.corpus != ds.corpus:
+        raise ValueError(f"{names[0]}: the validation split's corpus differs from the test split's")
+    shared = set(ds.queries) & set(reference_ds.queries)
+    if shared:
+        raise ValueError(f"{names[0]}: {len(shared)} question ids are in both the test and validation splits")
+    retriever = (make_retriever or (lambda: runner.default_retriever(run_config)))()
+
+    def observation(clean, state):
+        """All questions of `state` searched as the runner searches a window (state = clean or modified)."""
+        everyone = np.arange(len(clean.query_ids))
+        ids, scores, query_vectors = retriever.search(
+            state, k=k, query_embeddings=runner.window_queries(retriever, clean, state, everyone))
+        deep = None if depth is None else retriever.search(state, k=depth, query_embeddings=query_vectors)[1]
+        return runner.observe(state, everyone, ids, scores, query_vectors, deep_scores=deep)
+
+    reference = runner.read_only(retriever.embed_corpus(reference_ds))
+    fitted = {}
+    for name, cls in classes.items():
+        fitted[name] = cls(**params[name])
+        fitted[name].attach(retriever)
+        fitted[name].fit(observation(reference, reference))
+
+    baseline = runner.read_only(retriever.embed_corpus(ds))
+    scored = [("clean", None, 0.0, None, observation(baseline, baseline))]
+    for label, (injector_name, severities, injector_params) in failures.items():
+        injector = INJECTORS[injector_name](**injector_params)
+        injector.attach(retriever, baseline)
+        for severity in severities:
+            for seed in runner.run_seeds(run_config):
+                modified = runner.read_only(injector.apply(baseline, severity, seed))
+                scored.append((label, injector_name, float(severity), seed, observation(baseline, modified)))
+    values = pd.DataFrame([
+        {"failure": f, "injector": inj, "severity": s, "seed": seed, "statistic": name, "score": float(stat.score(obs))}
+        for f, inj, s, seed, obs in scored for name, stat in fitted.items()])
+    table = values.groupby(["failure", "injector", "severity", "statistic"], dropna=False, sort=False).agg(
+        mean=("score", "mean"), min=("score", "min"), max=("score", "max"), n_seeds=("seed", "count"))
+    return table.reset_index()
 
 
 def mean_ndcg10_drop_all_test_questions_by_severity(per_question_table: pd.DataFrame, analysis_config: dict) -> pd.DataFrame:
