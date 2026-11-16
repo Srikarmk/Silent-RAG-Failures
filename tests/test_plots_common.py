@@ -17,6 +17,7 @@ from silent_rag.plots._common import (  # noqa: E402
     nan_note,
     reference_curve,
     reference_line,
+    require_rows,
 )
 from silent_rag.plots.style import PlotStyle, deep_merge, new_figure, style_context  # noqa: E402
 
@@ -61,6 +62,25 @@ def test_include_filters_remove_rows(include, rows):
 def test_include_uses_the_label_column_and_ignores_absent_columns():
     got = filter_include(MODELS, resolved(include={"labels": ["m3"], "statistics": ["ks_top1"]}))
     assert got["label"].tolist() == ["m3"]  # table 16 has "label", no "statistic"
+
+
+def test_require_rows_passes_when_rows_remain():
+    s = resolved(include={"labels": ["m2"]})
+    assert require_rows(AUROC, filter_include(AUROC, s), s, "toy_figure") is None
+
+
+def test_require_rows_names_the_set_include_keys_when_include_removes_every_row():
+    s = resolved(include={"labels": ["m9"], "severities": [0.1]})  # statistics, min_drops stay null
+    with pytest.raises(ValueError, match=r"^toy_figure: no rows to plot after include "
+                                         r"\{'labels': \['m9'\], 'severities': \[0\.1\]\}$"):
+        require_rows(AUROC, filter_include(AUROC, s), s, "toy_figure")
+
+
+def test_require_rows_reports_an_empty_input_table_first():
+    s = resolved(include={"labels": ["m9"]})
+    empty = AUROC.iloc[:0]
+    with pytest.raises(ValueError, match=r"^toy_figure: the table has no rows$"):
+        require_rows(empty, filter_include(empty, s), s, "toy_figure")
 
 
 def test_label_order_rules():

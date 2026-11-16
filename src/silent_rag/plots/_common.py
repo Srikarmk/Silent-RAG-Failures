@@ -39,6 +39,17 @@ def filter_include(table: pd.DataFrame, settings: dict) -> pd.DataFrame:
     return table[keep]
 
 
+def require_rows(table: pd.DataFrame, filtered: pd.DataFrame, settings: dict, figure_name: str) -> None:
+    """Raise ValueError when a figure has nothing to draw: "<figure>: the table has no rows" when
+    `table` (the input) is empty, or, when rows existed but `filtered` (after filter_include) is
+    empty, "<figure>: no rows to plot after include {...}" naming only the include keys that are set."""
+    if table.empty:
+        raise ValueError(f"{figure_name}: the table has no rows")
+    if filtered.empty:
+        active = {k: v for k, v in settings["include"].items() if v is not None}
+        raise ValueError(f"{figure_name}: no rows to plot after include {active}")
+
+
 def label_order(labels, settings: dict, models: pd.DataFrame | None = None) -> list:
     """The labels in drawing order: order.labels first (those present), then the rest by mean
     cosine descending when a models table (table 16: label, mean_cosine) is given, else in order
