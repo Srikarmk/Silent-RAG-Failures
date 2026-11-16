@@ -1,0 +1,22 @@
+# Analysis settings for the smoke run (smoke.yaml): the same keys as analysis_f1.analysis.yaml,
+# with 1000 resamples and permutations to keep the smoke test short.
+
+min_mean_ndcg10_drops_for_harmful_share: [0.0, 0.02, 0.06]
+min_mean_ndcg10_drop_grid_for_auroc: {start: 0.0, stop: 0.10, step: 0.01}
+
+question_bootstrap: {resamples: 1000, seed: 0}
+window_bootstrap: {resamples: 1000, seed: 0}
+seed_cluster_bootstrap: {resamples: 1000, seed: 0}
+question_vulnerability: {top_fractions: [0.1], permutations: 1000, seed: 0}
+
+injector_specific:
+  F1_partial_upgrade:
+    replacement_model_difference_table:
+      query_prefixes:
+        BAAI/bge-small-en-v1.5: "Represent this sentence for searching relevant passages: "
+    reference_mean_window_ndcg10_drop:    # notebook 07: mean window nDCG@10 drop, seeds 0-2, trials 0-19
+      seeds: [0, 1, 2]
+      trials: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+      values:
+        F1_partial_upgrade_minilm: {0.1: 0.009, 0.5: 0.044, 0.9: 0.065}
+        F1_partial_upgrade_bge: {0.1: 0.014, 0.5: 0.080, 0.9: 0.195}
