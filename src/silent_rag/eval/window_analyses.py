@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 
 from silent_rag.eval.detector_scoring import bootstrap_auroc_ci, compute_auroc
 from silent_rag.eval.ground_truth import window_has_significant_ndcg10_drop
@@ -52,6 +53,10 @@ def median_seconds_per_statistic_evaluation(runs: pd.DataFrame) -> pd.DataFrame:
     return table.rename_axis("statistic").reset_index().sort_values("median_seconds", ignore_index=True)
 
 
+AUROC_COLUMNS = ["negatives", "auroc", "ci_low", "ci_high", "n_positive", "n_negative",
+                 "n_modified_windows_excluded", "n_negative_control_windows_excluded", "note"]
+
+
 def auroc_statistic_harmful_vs_negative_windows_by_severity(
     runs, statistic: str, failure: str, min_mean_ndcg10_drop: float, alpha: float, resamples: int, seed: int,
 ) -> pd.DataFrame:
@@ -92,10 +97,6 @@ def auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop(
     return pd.DataFrame(out)[["min_mean_ndcg10_drop", *AUROC_COLUMNS]]
 
 
-AUROC_COLUMNS = ["negatives", "auroc", "ci_low", "ci_high", "n_positive", "n_negative",
-                 "n_modified_windows_excluded", "n_negative_control_windows_excluded", "note"]
-
-
 def _comparisons(runs, statistic, failure, alpha, min_drop, per_severity: bool):
     """Yield (severity or None, negatives definition, pool, counts) for each comparison, after
     relabelling every window at alpha and min_drop. The pool holds the target windows and the
@@ -134,6 +135,57 @@ def _auroc_and_ci(pool, statistic, failure, counts, resamples, seed) -> dict:
     except ValueError as e:
         return {"auroc": compute_auroc(pool, statistic, failure), "ci_low": nan, "ci_high": nan, "note": f"no CI: {e}"}
     return {"auroc": auroc, "ci_low": low, "ci_high": high, "note": ""}
+
+
+def spearman_statistic_vs_window_mean_ndcg10_drop(runs, statistic: str, failure: str, resamples: int, seed: int) -> pd.DataFrame:
+    """Spearman correlation between a monitoring statistic and the window's mean nDCG@10 drop,
+    over the target failure's windows only (no unmodified windows, no labels).
+
+    One row per severity, plus one row with pooled=True (severity NaN) over all severities.
+    The pooled rho mixes the statistic's response to severity with its tracking of the drop;
+    the per-severity rho isolates tracking of the drop. The CI is a seed-cluster bootstrap:
+    whole seeds are resampled with replacement and rho is recomputed on all windows of the drawn
+    seeds, so it reflects variability across seeds over the same questions, not question-level
+    sampling uncertainty. A constant statistic or constant drop gives NaN plus a note.
+    """
+    rows = runs[runs["detector"].eq(statistic) & runs["failure"].eq(failure)]
+    if rows.duplicated(WINDOW).any():
+        raise ValueError(f"more than one {statistic} row per window; is this one run's table?")
+    groups = [(float(s), False, rows[rows["severity"].eq(s)]) for s in sorted(rows["severity"].unique())]
+    groups.append((float("nan"), True, rows))
+    out = [{"severity": severity, "pooled": pooled, **_spearman_and_seed_ci(group, resamples, seed)}
+           for severity, pooled, group in groups]
+    return pd.DataFrame(out, columns=["severity", "pooled", "rho", "ci_low", "ci_high", "n_windows", "n_seeds", "note"])
+
+
+def _rho(score, drop) -> float:
+    if np.ptp(score) == 0 or np.ptp(drop) == 0:
+        return float("nan")
+    return float(spearmanr(score, drop).statistic)
+
+
+def _spearman_and_seed_ci(group, resamples, seed) -> dict:
+    nan = float("nan")
+    counts = {"n_windows": len(group), "n_seeds": int(group["seed"].nunique())}
+    score, drop = group["score"].to_numpy(dtype=float), group["ndcg_drop"].to_numpy(dtype=float)
+    for name, values in (("statistic", score), ("drop", drop)):
+        if len(values) == 0 or np.ptp(values) == 0:
+            return {"rho": nan, "ci_low": nan, "ci_high": nan, **counts, "note": f"undefined: constant {name}"}
+    rho = _rho(score, drop)
+    if counts["n_seeds"] < 2:
+        return {"rho": rho, "ci_low": nan, "ci_high": nan, **counts, "note": "no CI: fewer than two seeds"}
+    by_seed = [(g["score"].to_numpy(dtype=float), g["ndcg_drop"].to_numpy(dtype=float)) for _, g in group.groupby("seed")]
+    rng = np.random.default_rng(seed)
+    boots = []
+    for _ in range(resamples):
+        drawn = [by_seed[i] for i in rng.integers(0, len(by_seed), size=len(by_seed))]
+        boots.append(_rho(np.concatenate([s for s, _ in drawn]), np.concatenate([d for _, d in drawn])))
+    boots = np.asarray(boots)
+    boots = boots[~np.isnan(boots)]  # resamples where the drawn seeds are constant
+    if len(boots) < 0.8 * resamples:
+        return {"rho": rho, "ci_low": nan, "ci_high": nan, **counts, "note": "no CI: too many constant resamples"}
+    low, high = np.quantile(boots, [0.025, 0.975])
+    return {"rho": rho, "ci_low": float(low), "ci_high": float(high), **counts, "note": ""}
 
 
 def check_mean_window_ndcg10_drop_against_reference(runs, reference_values: dict, seeds, decimals: int = 3,

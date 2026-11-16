@@ -10,6 +10,7 @@ from silent_rag.eval.window_analyses import (
     median_seconds_per_statistic_evaluation,
     one_row_per_window,
     share_of_windows_with_significant_ndcg10_drop_by_severity,
+    spearman_statistic_vs_window_mean_ndcg10_drop,
 )
 
 
@@ -156,6 +157,54 @@ def test_counts_match_the_rows_auc_pool_scores(per_severity, min_drop):
             assert len(_auc_pool(pool, "s", "F1")) == counts["n_positive"] + counts["n_negative"]
             checked += 1
     assert checked >= 2  # both negatives definitions were compared
+
+
+def spear(windows, resamples=500):
+    """windows: (failure, severity, seed, trial, drop, score) for statistic "s"."""
+    runs = pd.DataFrame([{"detector": "s", "failure": f, "severity": sev, "seed": seed, "trial": t,
+                          "ndcg_drop": d, "score": sc} for f, sev, seed, t, d, sc in windows])
+    return spearman_statistic_vs_window_mean_ndcg10_drop(runs, "s", "F1", resamples=resamples, seed=0)
+
+
+MONOTONE = [("F1", 0.5, seed, t, 0.01 * seed + 0.001 * t, 0.0) for seed in range(3) for t in range(4)]
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_spearman_monotone_and_reversed(sign):
+    got = spear([(f, s, seed, t, d, sign * d) for f, s, seed, t, d, _ in MONOTONE])
+    assert got["rho"].tolist() == [sign, sign]  # the severity row and the pooled row
+    assert got[["n_windows", "n_seeds"]].iloc[0].tolist() == [12, 3]
+    assert got["pooled"].tolist() == [False, True] and pd.isna(got["severity"].iloc[1])
+
+
+def test_spearman_constant_statistic_is_nan_with_a_note():
+    got = spear(MONOTONE).iloc[0]
+    assert pd.isna(got["rho"]) and got["note"] == "undefined: constant statistic"
+
+
+def test_spearman_pooled_mixes_severity_with_tracking():
+    # within a severity the statistic falls as the drop rises; across severities both rise
+    windows = [("F1", sev, seed, t, base + 0.001 * (4 * seed + t), base * 10 - 0.001 * (4 * seed + t))
+               for sev, base in [(0.1, 0.01), (0.9, 0.1)] for seed in range(3) for t in range(4)]
+    got = spear(windows).set_index("pooled")
+    assert got.loc[False, "rho"].tolist() == [-1.0, -1.0]
+    assert got.loc[True, "rho"] > 0.4
+
+
+def test_spearman_excludes_unmodified_windows():
+    clean = [("clean", 0.0, seed, t, 0.0, 99.0) for seed in range(3) for t in range(4)]  # would break monotonicity
+    got = spear(clean + [(f, s, seed, t, d, d) for f, s, seed, t, d, _ in MONOTONE])
+    assert got["rho"].tolist() == [1.0, 1.0] and got["n_windows"].tolist() == [12, 12]
+
+
+def test_spearman_bootstrap_resamples_whole_seeds():
+    # seed 0 tracks the drop (+1), seed 1 is reversed (-1). Resampling whole seeds draws {0,0}, {1,1}
+    # or a mix, so the interval reaches exactly -1 and +1; resampling single windows would not.
+    up = [("F1", 0.5, 0, t, 0.01 * t, 0.01 * t) for t in range(5)]
+    down = [("F1", 0.5, 1, t, 0.01 * t, -0.01 * t) for t in range(5)]
+    got = spear(up + down, resamples=2000).iloc[0]
+    assert (got["ci_low"], got["ci_high"]) == (-1.0, 1.0)
+    assert got["ci_low"] <= got["rho"] <= got["ci_high"]
 
 
 def test_higher_min_drop_moves_windows_from_positive_to_excluded():
