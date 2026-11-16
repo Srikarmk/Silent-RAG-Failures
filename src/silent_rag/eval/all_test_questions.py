@@ -138,17 +138,21 @@ def mean_ndcg10_drop_all_test_questions_by_severity(per_question_table: pd.DataF
     modified_ndcg10. Each question's drop is first averaged over its seeds; the bootstrap then
     resamples questions (analysis_config["question_bootstrap"]: resamples, seed). Questions x seeds
     are never pooled, since the seeds of one question are not independent samples. Seeds are raw
-    seeds, as in that table, not the runner's per-window seeds.
+    seeds, as in that table, not the runner's per-window seeds. baseline_ndcg10 is the mean baseline
+    nDCG@10 over the questions (taken once per question); it is the same in every row of a run and
+    equals replacement_model_difference_table's baseline_ndcg10.
     """
     boot = analysis_config["question_bootstrap"]
     table = per_question_table.assign(drop=per_question_table["baseline_ndcg10"] - per_question_table["modified_ndcg10"])
     keys = ["failure", "injector", "severity"]
-    per_question = table.groupby([*keys, "question_id"], sort=True).agg(drop=("drop", "mean"), n_seeds=("seed", "nunique"))
+    per_question = table.groupby([*keys, "question_id"], sort=True).agg(
+        drop=("drop", "mean"), n_seeds=("seed", "nunique"), baseline=("baseline_ndcg10", "first"))
     rows = []
     for (failure, injector, severity), group in per_question.groupby(level=keys, sort=True):
         if group["n_seeds"].nunique() != 1:
             raise ValueError(f"({failure}, {severity}): questions have different numbers of seeds")
         mean, low, high = bootstrap_ci(group["drop"].to_numpy(), n_boot=boot["resamples"], seed=boot["seed"])
         rows.append({"failure": failure, "injector": injector, "severity": float(severity), "mean_ndcg10_drop": mean,
-                     "ci_low": low, "ci_high": high, "n_questions": len(group), "n_seeds": int(group["n_seeds"].iloc[0])})
+                     "ci_low": low, "ci_high": high, "n_questions": len(group), "n_seeds": int(group["n_seeds"].iloc[0]),
+                     "baseline_ndcg10": float(group["baseline"].mean())})
     return pd.DataFrame(rows)

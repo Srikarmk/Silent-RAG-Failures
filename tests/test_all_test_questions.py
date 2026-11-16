@@ -133,6 +133,19 @@ def test_seeds_are_averaged_before_the_question_bootstrap():
     assert got["ci_high"] - got["ci_low"] > pooled[2] - pooled[1]
 
 
+def test_baseline_ndcg10_is_the_mean_over_questions_and_constant_per_run():
+    # baselines a 0.8, b 0.2, c 0.5 (same in every seed and condition); two failures x two severities, two seeds
+    baselines = {"a": 0.8, "b": 0.2, "c": 0.5}
+    rows = pd.DataFrame([{"question_id": q, "failure": f, "injector": f, "severity": sev, "seed": s,
+                          "baseline_ndcg10": b, "modified_ndcg10": b - 0.1 * sev}
+                         for f in ("F1", "F2") for sev in (0.1, 0.9) for s in (0, 1) for q, b in baselines.items()])
+    got = mean_ndcg10_drop_all_test_questions_by_severity(rows, BOOT)
+    assert got["baseline_ndcg10"].tolist() == pytest.approx([(0.8 + 0.2 + 0.5) / 3] * 4)
+    assert list(got.columns) == ["failure", "injector", "severity", "mean_ndcg10_drop", "ci_low", "ci_high",
+                                 "n_questions", "n_seeds", "baseline_ndcg10"]  # existing columns first, in order
+    assert got["mean_ndcg10_drop"].tolist() == pytest.approx([0.01, 0.09, 0.01, 0.09])
+
+
 def test_unequal_seed_counts_are_an_error():
     with pytest.raises(ValueError, match="different numbers of seeds"):
         mean_ndcg10_drop_all_test_questions_by_severity(per_question({"a": [0.1, 0.3], "b": [0.0]}), BOOT)
