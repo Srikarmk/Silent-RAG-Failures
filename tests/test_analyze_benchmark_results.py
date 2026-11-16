@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 import pandas as pd
 import pytest
 import yaml
@@ -39,8 +42,9 @@ def toy(monkeypatch, tmp_path):
 
 def test_every_table_is_written(toy):
     runs, analysis, out = toy
-    status = abr.analyze(RUN, analysis, runs, out, **FAKES)
+    status, seconds = abr.analyze(RUN, analysis, runs, out, **FAKES)
     assert set(status.values()) == {"written"}, status
+    assert set(seconds) == set(status) and all(s > 0 for s in seconds.values())
     expected = {f"{n}.parquet" for n in status if n != "window_mean_question_vulnerability_by_label"}
     expected |= {f"window_mean_question_vulnerability_by_label_{p}.parquet" for p in ("per_window", "summary")}
     assert {p.name for p in out.iterdir()} == expected
@@ -52,10 +56,10 @@ def test_only_skip_and_the_expensive_inputs_computed_once(toy, monkeypatch):
     for name in ("per_question_ndcg10_by_failure_severity_seed", "window_per_question_ndcg10_differences"):
         original = getattr(abr, name)
         monkeypatch.setattr(abr, name, lambda *a, _f=original, _n=name, **kw: calls.append(_n) or _f(*a, **kw))
-    status = abr.analyze(RUN, analysis, runs, out, skip=["check_mean_window_ndcg10_drop_against_reference"], **FAKES)
+    status, _ = abr.analyze(RUN, analysis, runs, out, skip=["check_mean_window_ndcg10_drop_against_reference"], **FAKES)
     assert "check_mean_window_ndcg10_drop_against_reference" not in status and len(status) == 15
     assert sorted(calls) == ["per_question_ndcg10_by_failure_severity_seed", "window_per_question_ndcg10_differences"]
-    only = abr.analyze(RUN, analysis, runs, out / "only", only=["median_seconds_per_statistic_evaluation"], **FAKES)
+    only, _ = abr.analyze(RUN, analysis, runs, out / "only", only=["median_seconds_per_statistic_evaluation"], **FAKES)
     assert list(only) == ["median_seconds_per_statistic_evaluation"]
 
 
@@ -71,8 +75,8 @@ def test_missing_setting_skips_its_table_but_an_error_inside_a_table_stops_the_r
     runs, analysis, out = toy
     without = {k: v for k, v in analysis.items() if k != "window_bootstrap"}
     name = "window_bootstrap_ci_vs_mean_ndcg10_drop"
-    assert abr.analyze(RUN, without, runs, out, only=[name], **FAKES) == {
-        name: "skipped: the analysis config has no window_bootstrap"}
+    assert abr.analyze(RUN, without, runs, out, only=[name], **FAKES) == (
+        {name: "skipped: the analysis config has no window_bootstrap"}, {name: None})
 
     def broken(runs):
         raise ValueError("broken table")
@@ -82,12 +86,36 @@ def test_missing_setting_skips_its_table_but_an_error_inside_a_table_stops_the_r
         abr.analyze(RUN, analysis, runs, out, only=["median_seconds_per_statistic_evaluation"], **FAKES)
 
 
+def cli(out, run_config, analysis, runs):
+    """Write the three input files next to out; return main()'s arguments and the paths."""
+    paths = {"run_config": out.parent / "run.yaml", "analysis_config": out.parent / "analysis.yaml",
+             "results": out.parent / "runs.parquet"}
+    paths["run_config"].write_text(yaml.safe_dump(run_config))
+    paths["analysis_config"].write_text(yaml.safe_dump(analysis))
+    runs.to_parquet(paths["results"])
+    return ["--config", str(paths["run_config"]), "--analysis", str(paths["analysis_config"]),
+            "--results", str(paths["results"]), "--out", str(out)], paths
+
+
 def test_run_id_mismatch_stops(toy):
     runs, analysis, out = toy
-    files = {name: out.parent / f"{name}.yaml" for name in ("run", "analysis")}
-    files["run"].write_text(yaml.safe_dump({**RUN, "trials": 3}))  # another run config, another run_id
-    files["analysis"].write_text(yaml.safe_dump(analysis))
-    runs.to_parquet(out.parent / "runs.parquet")
+    argv, _ = cli(out, {**RUN, "trials": 3}, analysis, runs)  # another run config, another run_id
     with pytest.raises(SystemExit, match="results have run_id"):
-        abr.main(["--config", str(files["run"]), "--analysis", str(files["analysis"]),
-                  "--results", str(out.parent / "runs.parquet"), "--out", str(out)])
+        abr.main(argv, **FAKES)
+
+
+def test_main_writes_a_manifest_of_every_table_and_input(toy):
+    runs, analysis, out = toy
+    argv, paths = cli(out, RUN, {k: v for k, v in analysis.items() if k != "window_bootstrap"}, runs)
+    abr.main(argv, **FAKES)
+    manifest = json.loads((out / "manifest.json").read_text())
+    tables = sorted(p for p in out.iterdir() if p.suffix == ".parquet")
+    assert len(tables) == 16  # 15 tables written, one of them as two files; window_bootstrap is skipped
+    assert manifest["outputs"] == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in tables}
+    assert {role: entry["sha256"] for role, entry in manifest["inputs"].items()} == {
+        role: hashlib.sha256(path.read_bytes()).hexdigest() for role, path in paths.items()}
+    skipped = manifest["tables"]["window_bootstrap_ci_vs_mean_ndcg10_drop"]
+    assert skipped == {"status": "skipped: the analysis config has no window_bootstrap", "seconds": None}
+    written = [t for t, entry in manifest["tables"].items() if entry["status"] == "written"]
+    assert len(written) == 15 and all(manifest["tables"][t]["seconds"] > 0 for t in written)
+    assert manifest["run_id"] == runner.run_id_from_run_config(RUN)

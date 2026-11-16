@@ -13,6 +13,7 @@ import os
 os.environ["OMP_NUM_THREADS"] = "1"  # before anything imports torch or faiss (spec 5.9)
 
 import argparse
+import time
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,7 @@ from silent_rag.eval.question_vulnerability import (
 )
 from silent_rag.eval.window_questions import window_bootstrap_ci_vs_mean_ndcg10_drop, window_per_question_ndcg10_differences
 from silent_rag.inject.base import REGISTRY as INJECTORS
+from silent_rag.manifest import write_manifest
 
 
 class TableNotApplicable(Exception):
@@ -56,8 +58,10 @@ def _require(analysis: dict, *paths) -> None:
 
 
 def analyze(run_config: dict, analysis: dict, runs: pd.DataFrame, out_dir: Path, final: bool = False,
-            only=None, skip=None, loader=data.load, make_retriever=None) -> dict[str, str]:
-    """Write every selected table to out_dir; return {table: "written" or "skipped: <reason>"}.
+            only=None, skip=None, loader=data.load, make_retriever=None) -> tuple[dict, dict]:
+    """Write every selected table to out_dir. Returns (status, seconds): {table: "written" or
+    "skipped: <reason>"} and {table: wall-clock seconds to compute and write it, None if skipped}.
+    An expensive shared input (e.g. the per-question table) is timed with the first table that uses it.
 
     Stops if `runs` is not exactly this run config's run_id, or if the reference check fails. A
     table is skipped only when it does not apply, checked before computing it: an analysis setting
@@ -158,7 +162,7 @@ def analyze(run_config: dict, analysis: dict, runs: pd.DataFrame, out_dir: Path,
     if unknown:
         raise SystemExit(f"unknown tables {unknown}, available: {list(tables)}")
     out_dir.mkdir(parents=True, exist_ok=True)
-    status = {}
+    status, seconds = {}, {}
     for name, (requires, applies, compute) in tables.items():
         if (only and name not in only) or name in (skip or []):
             continue
@@ -167,16 +171,21 @@ def analyze(run_config: dict, analysis: dict, runs: pd.DataFrame, out_dir: Path,
                 raise TableNotApplicable(f"the run config has no {F1} labels")
             _require(analysis, *requires)
         except TableNotApplicable as e:
-            status[name] = f"skipped: {e}"
+            status[name], seconds[name] = f"skipped: {e}", None
             continue
+        start = time.perf_counter()
         result = compute()
         for suffix, frame in (result.items() if isinstance(result, dict) else [("", result)]):
             frame.to_parquet(out_dir / f"{name}{'_' + suffix if suffix else ''}.parquet", index=False)
-        status[name] = "written"
-    return status
+        status[name], seconds[name] = "written", time.perf_counter() - start
+    return status, seconds
 
 
-def main(argv=None) -> None:
+REPO_ROOT = Path(__file__).resolve().parents[2]  # src/silent_rag/ -> the checkout, for the manifest's git state
+
+
+def main(argv=None, loader=data.load, make_retriever=None) -> None:
+    """loader and make_retriever are run()'s injection points (tests pass fakes)."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", required=True, help="the run config YAML")
     parser.add_argument("--analysis", required=True, help="the analysis config YAML")
@@ -186,8 +195,12 @@ def main(argv=None) -> None:
     parser.add_argument("--only", nargs="+", help="compute only these tables")
     parser.add_argument("--skip", nargs="+", help="skip these tables")
     args = parser.parse_args(argv)
-    status = analyze(load_yaml(args.config), load_yaml(args.analysis), pd.read_parquet(args.results), Path(args.out),
-                     final=args.final, only=args.only, skip=args.skip)
+    run_config, analysis, out = load_yaml(args.config), load_yaml(args.analysis), Path(args.out)
+    status, seconds = analyze(run_config, analysis, pd.read_parquet(args.results), out, final=args.final,
+                              only=args.only, skip=args.skip, loader=loader, make_retriever=make_retriever)
+    write_manifest(out, run_id=runner.run_id_from_run_config(run_config), analysis_config=analysis,
+                   input_files={"run_config": args.config, "analysis_config": args.analysis, "results": args.results},
+                   status=status, seconds=seconds, repo_dir=REPO_ROOT)
     for name, outcome in status.items():
         print(f"{name}: {outcome}")
 
