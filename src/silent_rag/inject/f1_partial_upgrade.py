@@ -63,6 +63,19 @@ class PartialUpgrade(Injector):
         self.alt_embeddings = vecs
         self.attached_doc_ids = list(state.doc_ids)
 
+    @staticmethod
+    def replaced_document_row_indices(n_documents: int, severity: float, seed: int) -> np.ndarray:
+        """Index rows whose vectors apply() replaces with the replacement model's, in permutation order.
+
+        One permutation per seed, cut at round(severity * n_documents): within a seed, a higher
+        severity replaces a superset of rows (the lower severity's rows are a prefix).
+        """
+        return np.random.default_rng(seed).permutation(n_documents)[: round(severity * n_documents)]
+
+    def modified_document_row_indices(self, n_documents: int, severity: float, seed: int) -> np.ndarray:
+        """Rows apply(state, severity, seed) changes, for per-question tables."""
+        return self.replaced_document_row_indices(n_documents, severity, seed)
+
     def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState:
         if not hasattr(self, "alt_embeddings"):
             raise RuntimeError(f"{self.name}: call attach() before apply(), it builds the alt model's vectors")
@@ -72,8 +85,7 @@ class PartialUpgrade(Injector):
             if n != len(self.attached_doc_ids):
                 msg += f", state has {n} rows but attach() was given {len(self.attached_doc_ids)}"
             raise ValueError(msg)
-        # one permutation per seed, cut at the severity: higher severities upgrade a superset of rows
-        rows = np.random.default_rng(seed).permutation(n)[: round(severity * n)]
+        rows = self.replaced_document_row_indices(n, severity, seed)
         emb = state.doc_embeddings.copy()
         emb[rows] = self.alt_embeddings[rows]
         return dataclasses.replace(state, doc_embeddings=emb)

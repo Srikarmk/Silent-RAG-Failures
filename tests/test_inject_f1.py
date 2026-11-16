@@ -146,6 +146,42 @@ def test_rows_follow_the_seed_and_grow_with_severity(monkeypatch):
     assert rows(0.5, 0) < rows(0.9, 0)
 
 
+@pytest.mark.parametrize("severity", [0.1, 0.5, 0.9, 1.0])
+@pytest.mark.parametrize("seed", [0, 7])
+def test_replaced_rows_are_the_rows_apply_changes(monkeypatch, severity, seed):
+    inj, state = attached(monkeypatch, ShiftedEncoder())  # every alt vector differs, so changed rows are visible
+    n = len(state.doc_ids)
+    rows = PartialUpgrade.replaced_document_row_indices(n, severity, seed)
+    np.testing.assert_array_equal(np.sort(rows), upgraded_rows(inj.apply(state, severity, seed), state))
+    np.testing.assert_array_equal(inj.modified_document_row_indices(n, severity, seed), rows)
+
+
+@pytest.mark.parametrize("severity, n, count", [(0.1, 40, 4), (0.5, 40, 20), (1.0, 40, 40), (0.25, 10, 2), (0.01, 40, 0)])
+def test_replaced_row_count_is_round_severity_times_n(severity, n, count):
+    # Python's round() rounds halves to even: 0.25 * 10 = 2.5 -> 2
+    rows = PartialUpgrade.replaced_document_row_indices(n, severity, seed=0)
+    assert len(rows) == count == round(severity * n)
+    assert len(set(rows.tolist())) == count and ((0 <= rows) & (rows < n)).all()
+
+
+def test_replaced_rows_are_nested_across_severities_within_a_seed():
+    by_severity = [PartialUpgrade.replaced_document_row_indices(40, s, seed=3) for s in (0.1, 0.3, 0.5, 0.9, 1.0)]
+    for lower, higher in zip(by_severity, by_severity[1:]):
+        np.testing.assert_array_equal(higher[: len(lower)], lower)  # a prefix, so also a subset
+    assert set(by_severity[-1].tolist()) == set(range(40))
+
+
+@pytest.mark.parametrize("severity, seed", [(0.3, 0), (0.7, 5)])
+def test_apply_output_is_unchanged_by_the_refactor(monkeypatch, severity, seed):
+    inj, state = attached(monkeypatch, ShiftedEncoder())
+    # apply() before this step selected rows inline with exactly this expression
+    n = len(state.doc_ids)
+    expected = state.doc_embeddings.copy()
+    old_rows = np.random.default_rng(seed).permutation(n)[: round(severity * n)]
+    expected[old_rows] = inj.alt_embeddings[old_rows]
+    np.testing.assert_array_equal(inj.apply(state, severity, seed).doc_embeddings, expected)
+
+
 def test_input_state_is_left_unchanged(monkeypatch):
     inj, state = attached(monkeypatch, ShiftedEncoder())
     before = state.doc_embeddings.copy()
