@@ -8,7 +8,7 @@ import pandas as pd
 
 from silent_rag import data
 from silent_rag import run as runner
-from silent_rag.eval.ground_truth import per_query_ndcg
+from silent_rag.eval.ground_truth import bootstrap_ci, per_query_ndcg
 from silent_rag.inject.base import REGISTRY as INJECTORS
 
 
@@ -65,3 +65,26 @@ def per_question_ndcg10_by_failure_severity_seed(run_config: dict, analysis_conf
                     "n_relevant": [len(r) for r in relevant], "n_relevant_modified": n_modified,
                 }))
     return pd.concat(tables, ignore_index=True)
+
+
+def mean_ndcg10_drop_all_test_questions_by_severity(per_question_table: pd.DataFrame, analysis_config: dict) -> pd.DataFrame:
+    """Mean nDCG@10 drop over all test questions, per failure x severity, with a question-bootstrap CI.
+
+    Takes per_question_ndcg10_by_failure_severity_seed's table. The drop is baseline_ndcg10 -
+    modified_ndcg10. Each question's drop is first averaged over its seeds; the bootstrap then
+    resamples questions (analysis_config["question_bootstrap"]: resamples, seed). Questions x seeds
+    are never pooled, since the seeds of one question are not independent samples. Seeds are raw
+    seeds, as in that table, not the runner's per-window seeds.
+    """
+    boot = analysis_config["question_bootstrap"]
+    table = per_question_table.assign(drop=per_question_table["baseline_ndcg10"] - per_question_table["modified_ndcg10"])
+    keys = ["failure", "injector", "severity"]
+    per_question = table.groupby([*keys, "question_id"], sort=True).agg(drop=("drop", "mean"), n_seeds=("seed", "nunique"))
+    rows = []
+    for (failure, injector, severity), group in per_question.groupby(level=keys, sort=True):
+        if group["n_seeds"].nunique() != 1:
+            raise ValueError(f"({failure}, {severity}): questions have different numbers of seeds")
+        mean, low, high = bootstrap_ci(group["drop"].to_numpy(), n_boot=boot["resamples"], seed=boot["seed"])
+        rows.append({"failure": failure, "injector": injector, "severity": float(severity), "mean_ndcg10_drop": mean,
+                     "ci_low": low, "ci_high": high, "n_questions": len(group), "n_seeds": int(group["n_seeds"].iloc[0])})
+    return pd.DataFrame(rows)
