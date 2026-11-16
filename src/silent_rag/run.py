@@ -268,6 +268,19 @@ def docs_of(state, clean, clean_docs):
     return doc_tuples(state)
 
 
+def window_question_indices(n_questions: int, window_size: int, seed: int, trial: int) -> tuple[np.ndarray, np.ndarray]:
+    """(reference_indices, window_indices) the runner uses for this seed and trial.
+
+    The reference window is the first window_size positions of one permutation per seed, so it
+    is the same for every trial; the scored window is drawn from the remaining positions with
+    rng([seed, trial]), so the two never overlap and every condition sees the same window.
+    Depends only on (n_questions, window_size, seed, trial), not on the failures in a config.
+    """
+    order = np.random.default_rng(seed).permutation(n_questions)
+    reference, pool = order[:window_size], order[window_size:]
+    return reference, np.random.default_rng([seed, trial]).choice(pool, window_size, replace=False)
+
+
 def injector_seed(seed: int, trial: int) -> int:
     # seed + trial would give seed 0 / trial 1 the same damage as seed 1 / trial 0
     return int(np.random.SeedSequence([seed, trial]).generate_state(1)[0])
@@ -299,10 +312,10 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
     clean_ndcg = per_query_ndcg(clean_ids, state.query_ids, ds.qrels, k)
 
     # The reference window the detectors are fit on never overlaps the windows they score.
-    order = np.random.default_rng(seed).permutation(len(state.query_ids))
-    ref_idx, pool = order[:window_size], order[window_size:]
-    if len(pool) < window_size:
-        raise SystemExit(f"{ds.name}: {len(order)} queries is too few for two windows of {window_size}")
+    n_questions = len(state.query_ids)
+    if n_questions - window_size < window_size:
+        raise SystemExit(f"{ds.name}: {n_questions} queries is too few for two windows of {window_size}")
+    ref_idx, _ = window_question_indices(n_questions, window_size, seed, trial=0)  # the same for every trial
 
     reference = observe(
         state, ref_idx, [clean_ids[i] for i in ref_idx], clean_scores[ref_idx], clean_q[ref_idx], clean_docs,
@@ -326,7 +339,7 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
         injector = made.get(failure)
         for trial in range(cfg["trials"]):
             # same windows for every condition, so trial t is comparable across them
-            idx = np.random.default_rng([seed, trial]).choice(pool, window_size, replace=False)
+            _, idx = window_question_indices(n_questions, window_size, seed, trial)
             if injector is None:
                 damaged = state
                 topk_ids = [clean_ids[i] for i in idx]

@@ -1,6 +1,7 @@
 import dataclasses
 
 import numpy as np
+import pandas as pd
 import pytest
 import yaml
 
@@ -232,6 +233,48 @@ def test_run_id_from_run_config_ignores_defaults_written_as_stored():
 def test_run_id_from_run_config_min_drop_int_changes_run_id():
     # the hash is of JSON text: 0 and 0.0 serialise differently, so write min_drop: 0.0
     assert runner.run_id_from_run_config({**RUN_CFG, "min_drop": 0}) != runner.run_id_from_run_config(RUN_CFG)
+
+
+def inline_windows(n_questions, window_size, seed, trial):
+    """run_dataset's window selection as it was written inline before window_question_indices."""
+    order = np.random.default_rng(seed).permutation(n_questions)
+    ref_idx, pool = order[:window_size], order[window_size:]
+    return ref_idx, np.random.default_rng([seed, trial]).choice(pool, window_size, replace=False)
+
+
+@pytest.mark.parametrize("seed, trial", [(0, 0), (0, 7), (3, 0), (3, 19), (9, 5)])
+def test_window_question_indices_equal_the_former_inline_selection(seed, trial):
+    reference, window = runner.window_question_indices(323, 100, seed, trial)
+    expected_reference, expected_window = inline_windows(323, 100, seed, trial)
+    np.testing.assert_array_equal(reference, expected_reference)
+    np.testing.assert_array_equal(window, expected_window)
+    assert len(reference) == len(window) == 100 and not set(reference) & set(window)
+    assert len(set(window.tolist())) == 100
+    again = runner.window_question_indices(323, 100, seed, trial)
+    np.testing.assert_array_equal(again[1], window)
+    np.testing.assert_array_equal(runner.window_question_indices(323, 100, seed, trial + 1)[0], reference)
+
+
+def test_run_output_and_run_id_are_unchanged_by_the_extraction(monkeypatch):
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    cfg = {"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name], "seeds": [0, 1], "trials": 3}
+    now = run(cfg)
+    monkeypatch.setattr(runner, "window_question_indices", inline_windows)  # the former inline selection
+    before = run(cfg)
+    columns = [c for c in now.columns if c != "cost_s"]  # wall-clock time differs run to run
+    pd.testing.assert_frame_equal(now[columns], before[columns])
+    full = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, **cfg}
+    assert set(now.run_id) == {runner.run_id_from_run_config(full)}
+
+
+def test_run_dataset_takes_its_windows_from_window_question_indices(monkeypatch):
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    calls, original = [], runner.window_question_indices
+    monkeypatch.setattr(runner, "window_question_indices", lambda *a, **kw: calls.append((a, kw)) or original(*a, **kw))
+    run({"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name]})
+    assert len(calls) == 1 + 2 * 2  # the reference window, then each trial of the clean and the scrambled condition
 
 
 def test_run_id_ignores_spelled_out_defaults():
