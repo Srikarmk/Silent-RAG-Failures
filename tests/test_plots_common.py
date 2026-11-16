@@ -7,15 +7,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from silent_rag.plots._common import (  # noqa: E402
+    band_legend_entry,
     end_labels,
+    figure_axes,
     filter_include,
+    finish_axes,
     label_order,
     line_with_band,
     nan_note,
     reference_curve,
     reference_line,
 )
-from silent_rag.plots.style import PlotStyle, new_figure  # noqa: E402
+from silent_rag.plots.style import PlotStyle, deep_merge, new_figure, style_context  # noqa: E402
 
 
 def resolved(**sections):
@@ -150,3 +153,74 @@ def test_helpers_never_create_a_pyplot_figure():
     end_labels(ax, 1, [(0.5, "a", "k")], s)
     nan_note(ax, AUROC, "auroc", s)
     assert plt.get_fignums() == []
+
+
+def test_figure_axes_creates_a_figure_only_without_ax():
+    s = resolved(figure={"width": 8.0, "height": 4.0})
+    fig, ax = figure_axes(s)
+    assert tuple(fig.get_size_inches()) == (8.0, 4.0) and ax.figure is fig
+    given = axes()
+    size = tuple(given.figure.get_size_inches())
+    fig2, ax2 = figure_axes(s, given)
+    assert ax2 is given and fig2 is given.figure and tuple(fig2.get_size_inches()) == size  # size settings unused
+
+
+def test_finish_axes_uses_builtin_text_unless_the_axes_settings_say_otherwise():
+    ax = axes()
+    finish_axes(ax, resolved(), title="T", xlabel="Severity", ylabel="Drop")
+    assert (ax.get_title(), ax.get_xlabel(), ax.get_ylabel()) == ("T", "Severity", "Drop")
+    ax = axes()
+    finish_axes(ax, resolved(axes={"title": "Finding", "ylabel": "nDCG@10"}), title="T", xlabel="Severity", ylabel="Drop")
+    assert (ax.get_title(), ax.get_xlabel(), ax.get_ylabel()) == ("Finding", "Severity", "nDCG@10")
+
+
+def test_finish_axes_sets_font_sizes_on_an_axes_made_outside_style_context():
+    s = resolved(fonts={"title": 17, "axis_label": 13, "tick": 11})
+    ax = axes()  # created with matplotlib's rcParams, before any style_context
+    ax.plot([1, 10], [1, 100])
+    with style_context(s):
+        finish_axes(ax, s, title="T", xlabel="x", ylabel="y")
+    assert (ax.title.get_fontsize(), ax.xaxis.label.get_fontsize(), ax.yaxis.label.get_fontsize()) == (17, 13, 13)
+    ticks = ax.xaxis.get_major_ticks() + ax.yaxis.get_major_ticks()
+    assert ticks and {t.label1.get_fontsize() for t in ticks} == {11}
+    ax.set_xscale("log")  # ticks recreated later keep the size
+    assert {t.label1.get_fontsize() for t in ax.xaxis.get_major_ticks() + ax.xaxis.get_minor_ticks()} == {11}
+
+
+def test_finish_axes_limits_and_log_scales():
+    ax = axes()
+    ax.plot([1, 10], [1, 100])
+    finish_axes(ax, resolved(axes={"xlim": [0.5, 20], "ylim": [1, 1000], "log_x": True, "log_y": True}),
+                title="", xlabel="x", ylabel="y")
+    assert ax.get_xlim() == pytest.approx((0.5, 20)) and ax.get_ylim() == pytest.approx((1, 1000))
+    assert (ax.get_xscale(), ax.get_yscale()) == ("log", "log")
+
+
+def test_finish_axes_legend_on_the_axes_outside_or_none():
+    s = resolved(legend={"ncol": 2, "title": "Replacement model"})
+    ax = axes()
+    ax.plot([0, 1], [0, 1], label="a")
+    legend = finish_axes(ax, s, title="", xlabel="x", ylabel="y")
+    assert ax.get_legend() is legend and [t.get_text() for t in legend.get_texts()] == ["a"]
+    assert legend.get_title().get_text() == "Replacement model"
+    ax = axes()
+    ax.plot([0, 1], [0, 1], label="a")
+    outside = finish_axes(ax, deep_merge(s, {"legend": {"outside": True}}), title="", xlabel="x", ylabel="y")
+    assert ax.get_legend() is None and ax.figure.legends == [outside]
+    ax = axes()
+    ax.plot([0, 1], [0, 1], label="a")
+    assert finish_axes(ax, deep_merge(s, {"legend": {"show": False}}), title="", xlabel="x", ylabel="y") is None
+    assert ax.get_legend() is None
+    ax = axes()
+    ax.plot([0, 1], [0, 1])  # nothing labelled
+    assert finish_axes(ax, s, title="", xlabel="x", ylabel="y") is None and ax.get_legend() is None
+
+
+def test_band_legend_entry_names_the_band_without_drawing_data():
+    ax, s = axes(), resolved(lines={"band_alpha": 0.25})
+    ax.plot([0, 1], [2, 3], label="m1")
+    before = ax.dataLim.frozen()
+    entry = band_legend_entry(ax, s, "shaded: 95% CI over questions")
+    assert ax.get_legend_handles_labels()[1] == ["m1", "shaded: 95% CI over questions"]
+    assert entry.get_alpha() == 0.25 and matplotlib.colors.to_hex(entry.get_facecolor()[0]) == "#7f7f7f"
+    assert ax.dataLim.frozen().bounds == before.bounds

@@ -1,8 +1,9 @@
 """Drawing helpers shared by the figure modules (spec section 5.13).
 
 Each helper takes resolved settings (PlotStyle.resolve's dict); the drawing ones draw into the
-axes they are given and never create, save or show a figure. Nothing here computes a statistic:
-helpers filter, order and draw values that are already in the tables (decision 12).
+axes they are given and never save or show a figure (only figure_axes creates one, when no axes
+is given). Nothing here computes a statistic: helpers filter, order and draw values that are
+already in the tables (decision 12).
 """
 from __future__ import annotations
 
@@ -10,6 +11,8 @@ import textwrap
 
 import numpy as np
 import pandas as pd
+
+from silent_rag.plots.style import new_figure, shared_legend
 
 # include key -> the table columns it filters, first one present wins (table 16 names labels "label")
 INCLUDE_COLUMNS = {"labels": ("failure", "label"), "statistics": ("statistic",),
@@ -124,3 +127,48 @@ def _counted(rows: pd.DataFrame, note_column: str, noun: str, qualifier: str) ->
     reasons = rows[note_column].fillna("no note").replace("", "no note").value_counts()
     because = "; ".join(f"{reason} ({count})" for reason, count in reasons.items())
     return f"{len(rows)} {noun}{'s' if len(rows) != 1 else ''} not shown{qualifier}: {because}"
+
+
+def figure_axes(settings: dict, ax=None):
+    """(fig, ax) to draw into: a new figure from settings["figure"] when ax is None, else ax and
+    its own figure (the figure size settings are then not used). Call inside style_context."""
+    if ax is None:
+        return new_figure(settings)
+    return ax.figure, ax
+
+
+def finish_axes(ax, settings: dict, *, title, xlabel, ylabel):
+    """Title, axis labels, limits, log scales and legend from settings["axes"] and
+    settings["legend"]. title/xlabel/ylabel are the figure's built-in text, used where the axes
+    setting is null. The legend goes on the axes, or beside the figure with legend.outside (via
+    shared_legend); none when legend.show is false or nothing is labelled. Returns the legend or
+    None. Call end_labels after this: it places labels using the final y limits. Title, axis label
+    and tick label sizes are set on the axes from settings["fonts"], so an axes created outside
+    style_context (an ax= panel) matches one created inside it."""
+    a, fonts = settings["axes"], settings["fonts"]
+    ax.set_title(title if a["title"] is None else a["title"], fontsize=fonts["title"])
+    ax.set_xlabel(xlabel if a["xlabel"] is None else a["xlabel"], fontsize=fonts["axis_label"])
+    ax.set_ylabel(ylabel if a["ylabel"] is None else a["ylabel"], fontsize=fonts["axis_label"])
+    ax.tick_params(axis="both", which="both", labelsize=fonts["tick"])
+    if a["log_x"]:
+        ax.set_xscale("log")
+    if a["log_y"]:
+        ax.set_yscale("log")
+    if a["xlim"] is not None:
+        ax.set_xlim(a["xlim"])
+    if a["ylim"] is not None:
+        ax.set_ylim(a["ylim"])
+    legend = settings["legend"]
+    if not legend["show"] or not ax.get_legend_handles_labels()[1]:
+        return None
+    if legend["outside"]:
+        return shared_legend(ax.figure, ax, settings)
+    return ax.legend(loc=legend["loc"], ncols=legend["ncol"], title=legend["title"], frameon=legend["frame"],
+                     fontsize=settings["fonts"]["legend"])
+
+
+def band_legend_entry(ax, settings: dict, label: str):
+    """A grey legend patch at lines.band_alpha naming what every band in the axes shows, e.g.
+    "shaded: 95% CI over questions". It draws nothing and leaves the data limits unchanged."""
+    return ax.fill_between([], [], [], color=settings["colors"]["reference_grey"], alpha=settings["lines"]["band_alpha"],
+                           linewidth=0, label=label)
