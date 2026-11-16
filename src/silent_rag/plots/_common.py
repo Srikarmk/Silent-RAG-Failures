@@ -99,16 +99,25 @@ def _reference_style(settings: dict, label) -> dict:
 def end_labels(ax, x, ends, settings: dict, min_gap: float = 0.06) -> list:
     """Text labels just right of x at each series' last value, as notebook 08's label_ends: ends
     are (y, text, colour); sorted by y, each label is moved up to at least min_gap of the y-axis
-    range above the one below it, so they do not overlap. Set the y limits before calling. NaN
-    ends are skipped."""
+    range above the one below it, so they do not overlap. If the top label then comes within half
+    a gap of the upper y-limit or passes it, the stack is moved down from the top: the top label
+    sits half a gap below the limit (so the whole label is inside) and each label below at most
+    min_gap under the one above (labels with room below them keep their place).
+    If the labels cannot fit min_gap apart between half a gap above the lower limit and half a gap
+    below the upper one, they are spread evenly between those two points. Labels stay in y order. Set the y limits before calling. NaN ends are skipped."""
     low, high = ax.get_ylim()
-    gap, placed, texts = (high - low) * min_gap, [], []
-    for y, text, color in sorted(e for e in ends if not np.isnan(e[0])):
-        y = max(y, placed[-1] + gap) if placed else y
-        placed.append(y)
-        texts.append(ax.text(x, y, f" {text}", color=color, fontsize=settings["fonts"]["annotation"],
-                             va="center", clip_on=False))
-    return texts
+    gap, kept = (high - low) * min_gap, sorted(e for e in ends if not np.isnan(e[0]))
+    placed = []
+    for y, _, _ in kept:
+        placed.append(max(y, placed[-1] + gap) if placed else y)
+    if len(placed) > 1 and (len(placed) - 1) * gap > high - low - gap:  # half a gap kept free at each end
+        placed = list(np.linspace(low + gap / 2, high - gap / 2, len(placed)))
+    elif placed and placed[-1] > high - gap / 2:
+        placed[-1] = high - gap / 2
+        for i in range(len(placed) - 2, -1, -1):
+            placed[i] = min(placed[i], placed[i + 1] - gap)
+    return [ax.text(x, y, f" {text}", color=color, fontsize=settings["fonts"]["annotation"], va="center",
+                    clip_on=False) for y, (_, text, color) in zip(placed, kept, strict=True)]
 
 
 def nan_note(ax, table: pd.DataFrame, value_column: str, settings: dict, note_column: str = "note",

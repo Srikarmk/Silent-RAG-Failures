@@ -123,6 +123,44 @@ def test_end_labels_are_spread_and_skip_nan():
     assert {t.get_position()[0] for t in texts} == {1.0} and texts[0].get_fontsize() == 16
 
 
+def end_ys(ax, ends):
+    texts = end_labels(ax, 1.0, ends, resolved())
+    return [t.get_text().strip() for t in texts], [t.get_position()[1] for t in texts]
+
+
+def test_end_labels_at_the_upper_limit_move_down_inside_in_order():
+    ax = axes()
+    ax.set_ylim(0, 1)
+    names, ys = end_ys(ax, [(1.0, "c", "C2"), (1.0, "a", "C0"), (1.0, "b", "C1"), (0.2, "z", "C3")])
+    assert names == ["z", "a", "b", "c"] and ys == pytest.approx([0.2, 0.85, 0.91, 0.97])  # z has room: unchanged
+
+
+def test_end_labels_taller_than_the_axes_are_spread_evenly():
+    ax = axes()
+    ax.set_ylim(0, 1)
+    names, ys = end_ys(ax, [(0.5, f"l{i:02d}", "k") for i in range(20)])  # 19 gaps of 0.06 > 1
+    assert names == [f"l{i:02d}" for i in range(20)] and ys == pytest.approx(np.linspace(0.03, 0.97, 20))
+
+
+def test_end_labels_even_spread_boundary_at_the_default_gap():
+    ax = axes()
+    ax.set_ylim(0, 1)  # usable 0.03 to 0.97: 16 gaps of 0.06 = 0.96 > 0.94, 15 gaps = 0.90 fit
+    names, ys = end_ys(ax, [(0.5, f"l{i:02d}", "k") for i in range(17)])
+    assert names == [f"l{i:02d}" for i in range(17)] and ys == pytest.approx(np.linspace(0.03, 0.97, 17))
+    ax16 = axes()
+    ax16.set_ylim(0, 1)
+    _, ys16 = end_ys(ax16, [(0.5, f"l{i:02d}", "k") for i in range(16)])
+    assert ys16 == pytest.approx(0.97 - 0.06 * np.arange(15, -1, -1)) and min(ys16) >= 0.03  # downward pass
+
+
+def test_end_labels_with_the_share_figure_limits():
+    ax = axes()
+    ax.set_ylim(-2, 102)  # gap = 6% of 104 = 6.24
+    names, ys = end_ys(ax, [(91.5, "L6", "C0"), (100.0, "L12", "C1"), (100.0, "bge", "C2"), (100.0, "gte", "C3")])
+    assert names == ["L6", "L12", "bge", "gte"] and ys == pytest.approx([80.16, 86.40, 92.64, 98.88])
+    assert all(-2 <= y <= 102 - 3.12 for y in ys)  # the top label is half a gap below the limit
+
+
 def test_nan_note_states_points_and_intervals_with_counts_and_reasons():
     ax, s = axes(), resolved()
     note = nan_note(ax, AUROC, "auroc", s, wrap_width=200)
