@@ -273,8 +273,14 @@ def test_run_dataset_takes_its_windows_from_window_question_indices(monkeypatch)
     monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
     calls, original = [], runner.window_question_indices
     monkeypatch.setattr(runner, "window_question_indices", lambda *a, **kw: calls.append((a, kw)) or original(*a, **kw))
+    splits, original_split = [], runner.reference_and_pool_indices
+    monkeypatch.setattr(runner, "reference_and_pool_indices",
+                        lambda *a, **kw: splits.append((a, kw)) or original_split(*a, **kw))
     run({"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name]})
-    assert len(calls) == 1 + 2 * 2  # the reference window, then each trial of the clean and the scrambled condition
+    assert len(calls) == 2 * 2  # each trial of the clean and the scrambled condition
+    # the reference window and pool come from reference_and_pool_indices: once directly in run_dataset,
+    # and once inside each window_question_indices call
+    assert len(splits) == 1 + 2 * 2
 
 
 def test_run_id_ignores_spelled_out_defaults():

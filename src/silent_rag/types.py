@@ -30,7 +30,10 @@ class RetrievalState:
     query_embeddings are computed once by the retriever. An injector that
     changes how queries are encoded (F5) edits them directly. One that changes
     query_texts (F4) sets query_embeddings to None so the runner re-embeds.
-    Query positions never change, the runner lines them up with the clean run.
+    The number of queries never changes. A query shift may put another query
+    of the dataset at a position (query_ids and query_texts changed together,
+    only ids from Injector.query_pool); ground truth then pairs the question
+    actually asked with its own clean result.
     """
 
     doc_ids: list[str]

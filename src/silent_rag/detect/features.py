@@ -64,13 +64,17 @@ class FeatureDrift(Detector):
 
     feature: str
 
+    def values(self, obs: Observation) -> np.ndarray:
+        """One value per query. Overridden by detectors that need more than the #18 features."""
+        return score_features(obs)[self.feature].to_numpy()
+
     def fit(self, reference: Observation) -> None:
-        self.reference_ = score_features(reference)[self.feature].to_numpy()
+        self.reference_ = self.values(reference)
 
     def score(self, window: Observation) -> float:
         if not hasattr(self, "reference_"):
             raise RuntimeError(f"{self.name} needs fit(reference) before it can score")
-        return float(self.compare(self.reference_, score_features(window)[self.feature].to_numpy()))
+        return float(self.compare(self.reference_, self.values(window)))
 
     @abstractmethod
     def compare(self, reference: np.ndarray, current: np.ndarray) -> float: ...

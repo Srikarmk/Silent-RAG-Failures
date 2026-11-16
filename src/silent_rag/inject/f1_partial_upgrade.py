@@ -20,6 +20,37 @@ from silent_rag.types import RetrievalState
 PREFIX_MODELS = ("intfloat/e5-", "intfloat/multilingual-e5-")
 
 
+def check_alt_model(params: dict, run_cfg: dict, who: str) -> None:
+    """Checks for an injector that encodes with a second model given as alt_model/alt_revision.
+    `who` names the injector in the messages."""
+    # binding already guaranteed both keys are present
+    alt_model, alt_revision = params["alt_model"], params["alt_revision"]
+    if not isinstance(alt_model, str) or not alt_model.strip():
+        raise ValueError(f"alt_model must be a non-empty model name, got {alt_model!r}")
+    # lowercase only: the revision goes into the cache key, so one commit gets one spelling
+    if not is_commit_hash(alt_revision):
+        raise ValueError(f"alt_revision must be a 40-character lowercase commit hash, got {alt_revision!r}")
+    # any revision: the clean revision may be unpinned, and a new revision of one model often has the same weights
+    if alt_model.strip().casefold() == run_cfg["model"].strip().casefold():
+        raise ValueError(f"alt_model {alt_model!r} is the clean model; {who} needs a different model, whatever the revision")
+    if alt_model.strip().casefold().startswith(PREFIX_MODELS):
+        raise ValueError(f"alt_model {alt_model!r} needs a document prefix (e.g. 'passage: '), which {who} doesn't add")
+
+
+def like(retriever_cls, retriever, model: str | None = None, **changes):
+    """A retriever with the clean retriever's settings except `model` and `changes`. A new
+    instance, not the clean one's encoder, so a changed model or length really is used."""
+    settings = dict(
+        normalize=retriever.normalize,
+        query_prefix=retriever.query_prefix,
+        max_seq_length=retriever.max_seq_length,
+        revision=retriever.revision,
+        batch_size=retriever.batch_size,
+        device=retriever.device,
+    )
+    return retriever_cls(model or retriever.model, **{**settings, **changes})
+
+
 @register
 class PartialUpgrade(Injector):
     name = "F1_partial_upgrade"
@@ -32,20 +63,9 @@ class PartialUpgrade(Injector):
 
     @classmethod
     def check_config(cls, params: dict, run_cfg: dict) -> None:
-        # binding already guaranteed both keys are present
-        alt_model, alt_revision = params["alt_model"], params["alt_revision"]
-        if not isinstance(alt_model, str) or not alt_model.strip():
-            raise ValueError(f"alt_model must be a non-empty model name, got {alt_model!r}")
-        # lowercase only: the revision goes into the cache key, so one commit gets one spelling
-        if not is_commit_hash(alt_revision):
-            raise ValueError(f"alt_revision must be a 40-character lowercase commit hash, got {alt_revision!r}")
-        # any revision: the clean revision may be unpinned, and a new revision of one model often has the same weights
-        if alt_model.strip().casefold() == run_cfg["model"].strip().casefold():
-            raise ValueError(f"alt_model {alt_model!r} is the clean model; F1 needs a different model, whatever the revision")
-        if alt_model.strip().casefold().startswith(PREFIX_MODELS):
-            raise ValueError(f"alt_model {alt_model!r} needs a document prefix (e.g. 'passage: '), which F1 doesn't add")
+        check_alt_model(params, run_cfg, "F1")
         # last, after the checks that need no files: Normalize, dimension and prefixes from the local cache
-        cls.model_checker(alt_model, alt_revision, run_cfg["model"], run_cfg["revision"])
+        cls.model_checker(params["alt_model"], params["alt_revision"], run_cfg["model"], run_cfg["revision"])
 
     def build_replacement_model_retriever(self, baseline_retriever, query_prefix: str | None = None):
         """A retriever for the replacement model with the baseline retriever's settings.
@@ -56,15 +76,8 @@ class PartialUpgrade(Injector):
         encodes documents, so the prefix matters only to callers that encode questions with
         the replacement model (e.g. bge needs its own query instruction).
         """
-        return self.retriever_cls(
-            self.alt_model,
-            normalize=baseline_retriever.normalize,
-            query_prefix=baseline_retriever.query_prefix if query_prefix is None else query_prefix,
-            max_seq_length=baseline_retriever.max_seq_length,
-            revision=self.alt_revision,
-            batch_size=baseline_retriever.batch_size,
-            device=baseline_retriever.device,
-        )
+        changes = {} if query_prefix is None else {"query_prefix": query_prefix}
+        return like(self.retriever_cls, baseline_retriever, self.alt_model, revision=self.alt_revision, **changes)
 
     def attach(self, retriever, state: RetrievalState) -> None:
         alt = self.build_replacement_model_retriever(retriever)

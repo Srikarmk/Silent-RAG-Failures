@@ -19,6 +19,13 @@ class Detector(ABC):
         to be running. The runner makes a fresh detector for each dataset and seed
         and calls this once, just before fit(). Only detectors that re-embed need it."""
 
+    @classmethod
+    def check_config(cls, params: dict, run_cfg: dict) -> None:
+        """Detector-specific config checks, run at bind time before anything is loaded
+        or embedded. `params` are this detector's constructor params, already accepted
+        by the constructor; `run_cfg` is the whole run config. Raise ValueError to
+        reject. Does nothing by default."""
+
     @abstractmethod
     def fit(self, reference: Observation) -> None: ...
 
