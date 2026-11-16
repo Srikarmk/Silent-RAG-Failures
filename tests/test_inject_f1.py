@@ -100,6 +100,52 @@ def test_alt_retriever_keeps_the_clean_settings_except_model_and_revision(monkey
     assert inj.alt_embeddings.shape == state.doc_embeddings.shape
 
 
+CLEAN_SETTINGS = dict(normalize=False, query_prefix="query: ", max_seq_length=128, revision="cleanrev", batch_size=8)
+
+
+def test_build_replacement_retriever_passes_the_same_settings_as_attach(monkeypatch):
+    seen = []
+
+    class Recording(Retriever):
+        def __init__(self, model, **kw):
+            seen.append((model, kw))
+            super().__init__(model, **kw)
+
+    monkeypatch.setattr(PartialUpgrade, "retriever_cls", Recording)
+    clean = Retriever("clean/model", encoder=HashEncoder(), **CLEAN_SETTINGS)
+    PartialUpgrade(**ALT).build_replacement_model_retriever(clean)
+    # the same constructor call the settings test above sees through attach()
+    assert seen == [(ALT["alt_model"], {**CLEAN_SETTINGS, "revision": ALT["alt_revision"], "device": "cpu"})]
+
+
+@pytest.mark.parametrize("query_prefix, expected", [
+    (None, "query: "),                      # inherits the baseline's prefix
+    ("Represent this: ", "Represent this: "),  # a string replaces it
+    ("", ""),                               # "" clears the inherited prefix
+])
+def test_build_replacement_retriever_query_prefix(query_prefix, expected):
+    clean = Retriever("clean/model", encoder=HashEncoder(), **CLEAN_SETTINGS)
+    alt = PartialUpgrade(**ALT).build_replacement_model_retriever(clean, query_prefix=query_prefix)
+    assert alt.query_prefix == expected
+    assert (alt.model, alt.revision) == (ALT["alt_model"], ALT["alt_revision"])
+    assert (alt.normalize, alt.max_seq_length, alt.batch_size, alt.device) == (False, 128, 8, "cpu")
+
+
+def test_build_replacement_retriever_does_not_copy_the_encoder():
+    clean = Retriever("clean/model", encoder=HashEncoder(), **CLEAN_SETTINGS)
+    alt = PartialUpgrade(**ALT).build_replacement_model_retriever(clean)
+    assert clean._encoder is not None and alt._encoder is None  # loads the replacement model when first used
+
+
+def test_attach_output_is_unchanged_by_the_refactor(monkeypatch):
+    inj, state = attached(monkeypatch, ShiftedEncoder(), **CLEAN_SETTINGS)
+    # attach() before this step built this retriever inline and encoded the corpus with it
+    old = Retriever(ALT["alt_model"], encoder=ShiftedEncoder(), normalize=False, query_prefix="query: ",
+                    max_seq_length=128, revision=ALT["alt_revision"], batch_size=8, device="cpu")
+    np.testing.assert_array_equal(inj.alt_embeddings, old.encode(state.doc_texts))
+    assert inj.attached_doc_ids == list(state.doc_ids)
+
+
 def test_alt_corpus_is_encoded_once_then_loaded_from_the_cache(monkeypatch):
     first, second = HashEncoder(), HashEncoder()
     a, _ = attached(monkeypatch, first)

@@ -43,17 +43,27 @@ class PartialUpgrade(Injector):
         if alt_model.strip().casefold().startswith(PREFIX_MODELS):
             raise ValueError(f"alt_model {alt_model!r} needs a document prefix (e.g. 'passage: '), which F1 doesn't add")
 
-    def attach(self, retriever, state: RetrievalState) -> None:
-        # same settings as the clean retriever, only the model changes; not its encoder, that's the clean model
-        alt = self.retriever_cls(
+    def build_replacement_model_retriever(self, baseline_retriever, query_prefix: str | None = None):
+        """A retriever for the replacement model with the baseline retriever's settings.
+
+        Copies normalize, max_seq_length, batch_size and device; uses alt_model and
+        alt_revision; never copies the encoder (that is the baseline model). query_prefix=None
+        inherits the baseline's prefix; a string replaces it, and "" clears it. F1 itself only
+        encodes documents, so the prefix matters only to callers that encode questions with
+        the replacement model (e.g. bge needs its own query instruction).
+        """
+        return self.retriever_cls(
             self.alt_model,
-            normalize=retriever.normalize,
-            query_prefix=retriever.query_prefix,
-            max_seq_length=retriever.max_seq_length,
+            normalize=baseline_retriever.normalize,
+            query_prefix=baseline_retriever.query_prefix if query_prefix is None else query_prefix,
+            max_seq_length=baseline_retriever.max_seq_length,
             revision=self.alt_revision,
-            batch_size=retriever.batch_size,
-            device=retriever.device,
+            batch_size=baseline_retriever.batch_size,
+            device=baseline_retriever.device,
         )
+
+    def attach(self, retriever, state: RetrievalState) -> None:
+        alt = self.build_replacement_model_retriever(retriever)
         vecs, _ = alt.embed_texts("f1_alt", state.doc_ids, state.doc_texts)
         if vecs.shape[1] != state.doc_embeddings.shape[1]:
             raise ValueError(
