@@ -193,6 +193,24 @@ def test_p_value_is_stored_and_min_drop_gates_harmful(monkeypatch):
     assert not strict.harmful.any()
 
 
+def test_harmful_column_and_run_id_match_the_inline_rule(monkeypatch):
+    """run() labels windows through window_has_significant_ndcg10_drop; the harmful column
+    and run_id are what the former inline rule `p < alpha and drop >= min_drop` gave."""
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    cfg = {"failures": {ScrambleDocs.name: [0.1, 0.9]}, "detectors": [MeanTop1.name], "window_size": 15}
+    alpha, min_drop = 0.05, 0.05
+    df = run(cfg, alpha=alpha, min_drop=min_drop)
+
+    inline = [bool(p < alpha and d >= min_drop) for p, d in zip(df.p_value, df.ndcg_drop)]
+    assert df.harmful.dtype == bool
+    assert df.harmful.tolist() == inline
+    assert df.harmful.any() and not df.harmful.all()  # both labels occur, so the comparison is not vacuous
+
+    full = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, **cfg, "alpha": alpha, "min_drop": min_drop}
+    assert set(df.run_id) == {runner.run_id({**runner.DEFAULTS, **full})}
+
+
 def test_run_id_ignores_spelled_out_defaults():
     cfg = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, "detectors": []}
     assert runner.run_id({**runner.DEFAULTS, **cfg}) == runner.run_id({**runner.DEFAULTS, **cfg, "seed": 0})

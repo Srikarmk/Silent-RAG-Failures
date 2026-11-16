@@ -20,7 +20,7 @@ import yaml
 
 from silent_rag import data, detect, inject
 from silent_rag.detect.base import REGISTRY as DETECTORS
-from silent_rag.eval.ground_truth import paired_bootstrap, per_query_ndcg
+from silent_rag.eval.ground_truth import paired_bootstrap, per_query_ndcg, window_has_significant_ndcg10_drop
 from silent_rag.eval.results import ResultRow, to_frame
 from silent_rag.inject.base import REGISTRY as INJECTORS
 from silent_rag.pipeline import Retriever, is_commit_hash
@@ -352,7 +352,7 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                         detector=name,
                         score=float(score),
                         ndcg_drop=drop,
-                        harmful=p < alpha and drop >= min_drop,
+                        harmful=window_has_significant_ndcg10_drop(p, drop, alpha, min_drop),
                         p_value=p,
                         cost_s=time.perf_counter() - start,
                     )
