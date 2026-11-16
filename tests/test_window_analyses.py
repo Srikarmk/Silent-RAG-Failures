@@ -55,6 +55,16 @@ def test_monte_carlo_flag_on_either_side_of_the_boundary():
     assert got.sort_values("trial")["p_value_within_2_monte_carlo_se_of_alpha"].tolist() == [True, False, True, False, True]
 
 
+def test_p_value_table_records_alpha_and_the_monte_carlo_band():
+    got = window_p_value_vs_mean_ndcg10_drop(table(CLEAN + F1), alpha=0.05, min_mean_ndcg10_drops=[0.0])
+    half_width = 2 * (0.05 * 0.95 / 2000) ** 0.5
+    assert (got["alpha"] == 0.05).all()
+    assert got["monte_carlo_band_low"].tolist() == pytest.approx([0.05 - half_width] * len(got))
+    assert got["monte_carlo_band_high"].tolist() == pytest.approx([0.05 + half_width] * len(got))
+    inside = (got["p_value"] > got["monte_carlo_band_low"]) & (got["p_value"] < got["monte_carlo_band_high"])
+    assert got["p_value_within_2_monte_carlo_se_of_alpha"].tolist() == inside.tolist()
+
+
 def test_rows_of_one_window_must_agree():
     runs = table(F1)
     runs.loc[1, "ndcg_drop"] = 0.5  # second statistic's row of the first window
@@ -173,9 +183,23 @@ def test_counts_match_the_rows_auc_pool_scores(per_severity, min_drop):
     checked = 0
     for _, _, pool, counts in _comparisons(scored(windows), "s", "F1", 0.05, min_drop, per_severity):
         if counts["n_positive"] and counts["n_negative"]:
-            assert len(_auc_pool(pool, "s", "F1")) == counts["n_positive"] + counts["n_negative"]
+            kept = _auc_pool(pool, "s", "F1")
+            assert len(kept) == counts["n_positive"] + counts["n_negative"]
+            assert kept.groupby(["run_id", "seed"]).ngroups == counts["n_seeds"]
             checked += 1
     assert checked >= 2  # both negatives definitions were compared
+
+
+def test_auroc_n_seeds_counts_only_seeds_in_the_comparison():
+    # seed 4 has only excluded (non-significant) F1 windows and no unmodified windows: not resampled
+    windows = BASE + [("F1", 0.5, seed, 0.1, 0.01, 1.0) for seed in (0, 1)] + [("F1", 0.5, 4, 0.0, 0.5, 1.0)]
+    got = auroc(windows).iloc[0]
+    assert (got["n_seeds"], got["n_modified_windows_excluded"]) == (4, 2)
+    by_min_drop = auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop(
+        scored(windows), "s", "F1", [0.0], alpha=0.05, resamples=200, seed=0)
+    assert by_min_drop["n_seeds"].tolist() == [4]
+    no_positives = auroc(BASE + [("F1", 0.5, seed, 0.0, 0.5, 1.0) for seed in SEEDS]).iloc[0]
+    assert pd.isna(no_positives["auroc"]) and no_positives["n_seeds"] == 4  # a count, filled even when AUROC is NaN
 
 
 def spear(windows, resamples=500):

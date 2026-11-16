@@ -57,14 +57,18 @@ def window_p_value_vs_mean_ndcg10_drop(runs, alpha: float, min_mean_ndcg10_drops
     come from window_has_significant_ndcg10_drop. p_value_within_2_monte_carlo_se_of_alpha is
     |p_value - alpha| < 2 * sqrt(alpha * (1 - alpha) / 2000): the runner's p-value comes from 2000
     bootstrap resamples, so a p-value this close to alpha could fall on either side of it in a rerun
-    with a different bootstrap seed.
+    with a different bootstrap seed. The columns alpha, monte_carlo_band_low and
+    monte_carlo_band_high (alpha -/+ that half-width) are the same in every row.
     """
     windows = one_row_per_window(runs)
     p, drop = windows["p_value"].to_numpy(), windows["ndcg_drop"].to_numpy()
     for min_drop in min_mean_ndcg10_drops:
         windows[f"significant_at_min_drop_{float(min_drop)}"] = window_has_significant_ndcg10_drop(p, drop, alpha, min_drop)
-    windows["p_value_within_2_monte_carlo_se_of_alpha"] = (
-        np.abs(p - alpha) < 2 * np.sqrt(alpha * (1 - alpha) / RUNNER_RESAMPLES))
+    half_width = 2 * np.sqrt(alpha * (1 - alpha) / RUNNER_RESAMPLES)
+    windows["p_value_within_2_monte_carlo_se_of_alpha"] = np.abs(p - alpha) < half_width
+    windows["alpha"] = alpha
+    windows["monte_carlo_band_low"] = alpha - half_width
+    windows["monte_carlo_band_high"] = alpha + half_width
     return windows
 
 
@@ -75,7 +79,7 @@ def median_seconds_per_statistic_evaluation(runs: pd.DataFrame) -> pd.DataFrame:
     return table.rename_axis("statistic").reset_index().sort_values("median_seconds", ignore_index=True)
 
 
-AUROC_COLUMNS = ["negatives", "auroc", "ci_low", "ci_high", "n_positive", "n_negative",
+AUROC_COLUMNS = ["negatives", "auroc", "ci_low", "ci_high", "n_positive", "n_negative", "n_seeds",
                  "n_modified_windows_excluded", "n_negative_control_windows_excluded", "note"]
 
 
@@ -96,6 +100,8 @@ def auroc_statistic_harmful_vs_negative_windows_by_severity(
     seed-cluster bootstrap (bootstrap_auroc_ci): it resamples whole seeds over the same questions,
     so it reflects variability across seeds, not question-level sampling uncertainty. An empty
     class gives NaN plus a note; a CI that can't be formed (e.g. one seed) gives NaN CI plus a note.
+    n_seeds is the number of seed clusters the bootstrap resamples: distinct (run_id, seed) among
+    the positive and negative windows (excluded windows do not count).
     """
     out = [{"severity": key, "negatives": name, **_auroc_and_ci(pool, statistic, failure, counts, resamples, seed), **counts}
            for key, name, pool, counts in _comparisons(runs, statistic, failure, alpha, min_mean_ndcg10_drop, True)]
@@ -141,6 +147,7 @@ def _comparisons(runs, statistic, failure, alpha, min_drop, per_severity: bool):
             counts = {
                 "n_positive": int((at & rows["harmful"]).sum()),
                 "n_negative": int(negatives.sum()),
+                "n_seeds": rows[(at & rows["harmful"]) | negatives].groupby(["run_id", "seed"], dropna=False).ngroups,
                 "n_modified_windows_excluded": int((at & ~rows["harmful"]).sum()),
                 "n_negative_control_windows_excluded": int((control & rows["harmful"]).sum()) if name != "unmodified" else 0,
             }
