@@ -38,6 +38,23 @@ def _one_value(table, column: str) -> float:
     return float(values[0])
 
 
+def _labelled_points(ax, xs, ys, lows, highs, labels, settings: dict) -> None:
+    """One point per label with an error bar from low to high, in the label's colour, named next
+    to the point (point_labels) rather than in the legend."""
+    lines = settings["lines"]
+    for x, y, low, high, label in zip(xs, ys, lows, highs, labels, strict=True):
+        ax.errorbar(x, y, yerr=[[y - low], [high - y]], fmt="o", color=color_for(label, settings, labels),
+                    markersize=lines["marker_size"], elinewidth=lines["width"], capsize=lines["marker_size"] / 2,
+                    label="_nolegend_")
+    point_labels(ax, xs, ys, labels, settings)
+
+
+def _error_bar_legend_entry(ax, settings: dict) -> None:
+    """A grey legend entry naming the error bars; draws nothing (NaN data)."""
+    ax.errorbar([np.nan], [np.nan], yerr=[[np.nan], [np.nan]], fmt="o", color=settings["colors"]["reference_grey"],
+                markersize=settings["lines"]["marker_size"], label=ERROR_BARS)
+
+
 def replacement_model_difference(models, *, y=None, style=None, ax=None, **shared):
     """How far each replacement model is from the baseline, from table 16
     (replacement_model_difference_table): one point per model at the mean cosine between its and
@@ -63,19 +80,13 @@ def replacement_model_difference(models, *, y=None, style=None, ax=None, **share
 
     with style_context(settings):
         fig, ax = figure_axes(settings, ax)
-        lines = settings["lines"]
-        for label, row in rows.iterrows():
-            ax.errorbar(row["mean_cosine"], row[value], yerr=[[row[value] - row[low]], [row[high] - row[value]]],
-                        fmt="o", color=color_for(label, settings, labels), markersize=lines["marker_size"],
-                        elinewidth=lines["width"], capsize=lines["marker_size"] / 2, label="_nolegend_")
-        point_labels(ax, rows["mean_cosine"], rows[value], labels, settings)
+        _labelled_points(ax, rows["mean_cosine"], rows[value], rows[low], rows[high], labels, settings)
         if y == "shared":
             reference_line(ax, settings, label=f"all {k} shared", y=k)
             reference_line(ax, settings, label="identical vectors (mean cosine 1)", x=1)
         else:
             reference_line(ax, settings, label=f"baseline nDCG@10 = {baseline:.3f}", y=baseline)
-        ax.errorbar([np.nan], [np.nan], yerr=[[np.nan], [np.nan]], fmt="o", color=settings["colors"]["reference_grey"],
-                    markersize=lines["marker_size"], label=ERROR_BARS)  # legend entry only
+        _error_bar_legend_entry(ax, settings)
         ax.set_xlim(left=0)
         ax.set_ylim(bottom=0)  # a count from 0 to k, or nDCG@10; the top stays as autoscaled
         finish_axes(ax, settings, xlabel="Mean cosine similarity of document vectors, replacement vs baseline", **{
@@ -145,4 +156,42 @@ def dose_response_ndcg10_drop(drops, *, scale=None, annotate_ends=None, models=N
         }[scale])
         if settings["annotate_ends"]:
             end_labels(ax, x_max, ends, settings)
+    return fig
+
+
+FIGURE_DEFAULTS["ndcg10_drop_at_severity_vs_mean_cosine"] = {"severity": 1.0}
+
+
+def ndcg10_drop_at_severity_vs_mean_cosine(drops, models, *, severity=None, style=None, ax=None, **shared):
+    """Mean nDCG@10 drop over all test questions at one severity (table 9) against the mean cosine
+    of each replacement model's document vectors with the baseline's (table 16), joined on label;
+    severity matches with np.isclose. Error bars are 95% CIs over questions; each point is named
+    next to it; a line marks no drop. Points are ordered by mean cosine unless order.labels says
+    otherwise; the x-axis starts at 0. Raises listing the labels without a row at that severity
+    or without a mean cosine.
+    """
+    name = "ndcg10_drop_at_severity_vs_mean_cosine"
+    settings = (style or PlotStyle.default()).resolve(name, severity=severity, **shared)
+    severity = float(settings["severity"])
+    table = filter_include(drops, settings)
+    require_rows(drops, table, settings, name)
+    labels = label_order(table["failure"], settings, models)
+    at = table[np.isclose(table["severity"].to_numpy(dtype=float), severity)].set_index("failure")
+    cosine = models.set_index("label")["mean_cosine"]
+    no_severity = [label for label in labels if label not in at.index]
+    no_cosine = [label for label in labels if label not in cosine.index]
+    if no_severity or no_cosine:
+        raise ValueError(f"{name}: labels without a row at severity {severity:g}: {no_severity}; "
+                         f"labels without a mean cosine in table 16: {no_cosine}")
+    at = at.loc[labels]
+
+    with style_context(settings):
+        fig, ax = figure_axes(settings, ax)
+        _labelled_points(ax, cosine[labels], at["mean_ndcg10_drop"], at["ci_low"], at["ci_high"], labels, settings)
+        reference_line(ax, settings, label="no drop (clean baseline)", y=0)
+        _error_bar_legend_entry(ax, settings)
+        ax.set_xlim(left=0)
+        finish_axes(ax, settings, title=f"Mean nDCG@10 drop at severity {severity:g} vs mean cosine",
+                    xlabel="Mean cosine similarity of document vectors, replacement vs baseline",
+                    ylabel=f"Mean nDCG@10 drop at severity {severity:g}")
     return fig

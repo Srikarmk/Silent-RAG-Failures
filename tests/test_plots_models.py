@@ -7,7 +7,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from silent_rag.plots.figures_models import dose_response_ndcg10_drop, replacement_model_difference  # noqa: E402
+from silent_rag.plots.figures_models import (  # noqa: E402
+    dose_response_ndcg10_drop,
+    ndcg10_drop_at_severity_vs_mean_cosine,
+    replacement_model_difference,
+)
 from silent_rag.plots.style import PALETTES, PlotStyle, new_figure  # noqa: E402
 
 BASE = 0.3
@@ -217,3 +221,49 @@ def test_model_difference_errors():
         models_fig(TABLE16.assign(k=[10, 5]))
     with pytest.raises(ValueError, match="baseline_ndcg10 must be the same in every row"):
         models_fig(TABLE16.assign(baseline_ndcg10=[0.3, 0.31]))
+
+
+def at_severity(drops=DROPS, models=TABLE16, **kwargs):
+    return ndcg10_drop_at_severity_vs_mean_cosine(drops, models, **kwargs)
+
+
+def test_drop_at_severity_returns_a_figure_without_pyplot_or_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    plt.close("all")
+    fig = at_severity()
+    assert isinstance(fig, Figure) and len(fig.axes) == 1
+    assert plt.get_fignums() == [] and list(tmp_path.iterdir()) == []
+
+
+def test_drop_at_severity_joins_table_9_and_table_16_on_label():
+    ax = at_severity().axes[0]  # severity defaults to 1.0
+    okabe = PALETTES["okabe_ito"]
+    assert points(ax) == [(0.95, 0.12, okabe[0], 0.10, 0.14), (0.80, 0.05, okabe[1], 0.04, 0.06)]  # m_b first
+    assert ax.get_legend_handles_labels()[1] == ["no drop (clean baseline)", ERROR_BARS]
+    assert ax.get_xlim()[0] == 0 and ax.get_ylabel() == "Mean nDCG@10 drop at severity 1" and ax.get_title()
+    assert {t.get_text() for t in ax.texts} == {"m_a", "m_b"}
+
+
+def test_drop_at_severity_option_from_call_yaml_and_isclose():
+    assert [p[1] for p in points(at_severity(severity=0.5).axes[0])] == [0.06, 0.02]
+    s = PlotStyle({"figures": {"ndcg10_drop_at_severity_vs_mean_cosine": {"severity": 0.5}}})
+    assert [p[1] for p in points(at_severity(style=s).axes[0])] == [0.06, 0.02]
+    noisy = DROPS.assign(severity=DROPS["severity"] * 3 / 3 + 1e-12)  # stored value not exactly 1.0
+    assert [p[1] for p in points(at_severity(noisy).axes[0])] == [0.12, 0.05]
+
+
+def test_drop_at_severity_include_order_and_ax():
+    assert [p[0] for p in points(at_severity(include={"labels": ["m_a"]}).axes[0])] == [0.80]
+    assert [p[0] for p in points(at_severity(style=PlotStyle({"order": {"labels": ["m_a"]}})).axes[0])] == [0.80, 0.95]
+    fig, axes = new_figure(PlotStyle.default().resolve("grid"), ncols=2)
+    assert at_severity(ax=axes[1], legend={"show": False}) is fig and points(axes[1]) and not axes[0].containers
+
+
+def test_drop_at_severity_lists_labels_missing_a_severity_or_a_mean_cosine():
+    no_b_at_1 = DROPS[~(DROPS["failure"].eq("m_b") & DROPS["severity"].eq(1.0))]
+    with pytest.raises(ValueError, match=r"without a row at severity 1: \['m_b'\]; .*mean cosine in table 16: \[\]"):
+        at_severity(no_b_at_1)
+    with pytest.raises(ValueError, match=r"severity 0\.7: \['m_b', 'm_a'\]; .*table 16: \['m_a'\]$"):
+        at_severity(models=TABLE16[TABLE16["label"].eq("m_b")], severity=0.7)
+    with pytest.raises(ValueError, match=r"^ndcg10_drop_at_severity_vs_mean_cosine: no rows to plot after include"):
+        at_severity(include={"labels": ["m_z"]})
