@@ -1,9 +1,25 @@
-from pathlib import Path
+import subprocess
+import sys
 
+import matplotlib
 import pytest
 
-from silent_rag.plots import style
-from silent_rag.plots.style import SCHEMA_DEFAULTS, PlotStyle, deep_merge
+matplotlib.use("Agg")
+from matplotlib.axes import Axes  # noqa: E402
+
+from silent_rag.plots import style  # noqa: E402
+from silent_rag.plots.style import (  # noqa: E402
+    SCHEMA_DEFAULTS,
+    PlotStyle,
+    color_for,
+    deep_merge,
+    display_name,
+    new_figure,
+    point_labels,
+    save_figure,
+    shared_legend,
+    style_context,
+)
 
 FIG = "toy_figure"
 
@@ -128,4 +144,93 @@ def test_resolve_never_changes_the_defaults_and_imports_no_matplotlib():
     before = deep_merge(SCHEMA_DEFAULTS, {})
     PlotStyle.default().resolve(FIG)["fonts"]["title"] = 99
     assert SCHEMA_DEFAULTS == before and style.FIGURE_DEFAULTS[FIG]["fonts"]["title"] == 22
-    assert "matplotlib" not in Path(style.__file__).read_text()  # this step is pure dicts
+    code = "import sys, silent_rag.plots.style as s; s.PlotStyle.default().resolve('x'); print('matplotlib' in sys.modules)"
+    assert subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.strip() == "False"
+
+
+@pytest.fixture
+def settings():
+    return PlotStyle({"fonts": {"title": 30}, "label_offsets": {"a": [-14, -18]},
+                      "display_names": {"label": {"a": "Model A"}}}).resolve(FIG)
+
+
+def test_style_context_applies_settings_and_restores_every_rcparam(settings):
+    before = dict(matplotlib.rcParams)
+    with style_context(settings):
+        assert matplotlib.rcParams["axes.titlesize"] == 30 and matplotlib.rcParams["lines.linewidth"] == 2.5
+    assert dict(matplotlib.rcParams) == before
+
+
+def test_new_figure_size_dpi_layout_and_grid(settings):
+    fig, ax = new_figure(settings)
+    assert tuple(fig.get_size_inches()) == (12.0, 6.75) and fig.dpi == 200
+    assert fig.get_layout_engine().__class__.__name__ == "ConstrainedLayoutEngine" and isinstance(ax, Axes)
+    assert new_figure(settings, nrows=2, ncols=3)[1].shape == (2, 3)
+
+
+def test_shared_legend_names_each_label_once(settings):
+    fig, axes = new_figure(settings, ncols=2)
+    for ax in axes:
+        ax.plot([0, 1], [0, 1], label="a")
+    axes[1].plot([0, 1], [1, 0], label="b")
+    assert [t.get_text() for t in shared_legend(fig, axes, settings).get_texts()] == ["a", "b"]
+    assert shared_legend(fig, axes, deep_merge(settings, {"legend": {"show": False}})) is None
+
+
+def drawn(settings):
+    fig, ax = new_figure(settings)
+    ax.plot([0, 1, 2], [0, 1, 0], label="a")
+    ax.fill_between([0, 1, 2], [0, 0, 0], [1, 1, 1], alpha=0.2)  # clip paths and ids in the SVG
+    ax.set_title("t")
+    return fig
+
+
+@pytest.mark.parametrize("formats", [["png", "svg"], ["png"], ["svg"]])
+def test_save_writes_each_requested_format(tmp_path, settings, formats):
+    paths = save_figure(drawn(settings), tmp_path / "sub" / "fig", deep_merge(settings, {"figure": {"formats": formats}}))
+    assert paths == [tmp_path / "sub" / f"fig.{f}" for f in formats] and all(p.stat().st_size > 0 for p in paths)
+    assert sorted(p.name for p in (tmp_path / "sub").iterdir()) == sorted(f"fig.{f}" for f in formats)
+
+
+def test_saves_are_byte_identical(tmp_path, settings):
+    settings = deep_merge(settings, {"figure": {"formats": ["png", "svg", "pdf"]}})
+    first = save_figure(drawn(settings), tmp_path / "one", settings)
+    second = save_figure(drawn(settings), tmp_path / "two", settings)  # a new figure object
+    for a, b in zip(first, second):
+        assert a.read_bytes() == b.read_bytes(), a.suffix
+    png, svg, pdf = (p.read_bytes() for p in first)
+    assert b"Matplotlib" not in png and b"<dc:date>" not in svg
+    assert b"/CreationDate" not in pdf and b"Matplotlib" not in pdf
+
+
+def test_colours_follow_order_labels_whatever_subset_is_drawn(settings):
+    s = deep_merge(settings, {"order": {"labels": ["a", "b", "c"]}})
+    okabe = style.PALETTES["okabe_ito"]
+    assert okabe[:4] == ["#0072B2", "#009E73", "#E69F00", "#D55E00"]  # notebook 08's four models: blue, green, orange, vermillion
+    assert color_for("c", s, ["c"]) == color_for("c", s, ["b", "c"]) == okabe[2]
+    assert color_for("c", settings, ["c", "a"]) == okabe[0]  # no order.labels: the given order
+    assert color_for("c", deep_merge(s, {"colors": {"by_label": {"c": "#123456"}}}), ["c"]) == "#123456"
+
+
+def test_palette_by_name_or_list(settings):
+    listed = deep_merge(settings, {"colors": {"palette": ["#111111", "#222222"]}})
+    assert [color_for(x, listed, ["a", "b"]) for x in "ab"] == ["#111111", "#222222"]
+    with pytest.raises(ValueError, match="3 labels but 2 palette colours"):
+        color_for("c", listed, ["a", "b", "c"])
+    with pytest.raises(ValueError, match="unknown palette 'viridis'"):
+        color_for("a", deep_merge(settings, {"colors": {"palette": "viridis"}}), ["a"])
+
+
+def test_display_name_falls_back_to_the_key(settings):
+    assert display_name("label", "a", settings) == "Model A" and display_name("label", "b", settings) == "b"
+    assert display_name("statistic", "ks_top1", settings) == "ks_top1"
+    with pytest.raises(ValueError, match="unknown display-name kind 'labels'"):
+        display_name("labels", "a", settings)
+
+
+def test_point_labels_use_configured_offsets(settings):
+    fig, ax = new_figure(settings)
+    a, b = point_labels(ax, [0.1, 0.2], [1, 2], ["a", "b"], settings)
+    assert (a.get_text(), tuple(a.xyann), a.get_ha(), a.get_va()) == ("Model A", (-14, -18), "right", "top")
+    assert (b.get_text(), tuple(b.xyann), b.get_ha(), b.get_va()) == ("b", style.DEFAULT_LABEL_OFFSET, "left", "bottom")
+    assert a.get_fontsize() == settings["fonts"]["annotation"]
