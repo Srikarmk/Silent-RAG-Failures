@@ -211,6 +211,29 @@ def test_harmful_column_and_run_id_match_the_inline_rule(monkeypatch):
     assert set(df.run_id) == {runner.run_id({**runner.DEFAULTS, **full})}
 
 
+@pytest.mark.parametrize("seeding", [{}, {"seed": 3}, {"seeds": [0, 1]}], ids=["no seed", "seed", "seeds"])
+def test_run_id_from_run_config_equals_the_run_id_column(monkeypatch, seeding):
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    cfg = {"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name], **seeding}
+    df = run(cfg)
+    full = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, **cfg}  # what the run helper passes
+    assert set(df.run_id) == {runner.run_id_from_run_config(full)}
+
+
+RUN_CFG = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, "detectors": ["x"], "seeds": [0, 1]}
+
+
+def test_run_id_from_run_config_ignores_defaults_written_as_stored():
+    explicit = {**RUN_CFG, "k": 10, "alpha": 0.05, "min_drop": 0.0}
+    assert runner.run_id_from_run_config(explicit) == runner.run_id_from_run_config(RUN_CFG)
+
+
+def test_run_id_from_run_config_min_drop_int_changes_run_id():
+    # the hash is of JSON text: 0 and 0.0 serialise differently, so write min_drop: 0.0
+    assert runner.run_id_from_run_config({**RUN_CFG, "min_drop": 0}) != runner.run_id_from_run_config(RUN_CFG)
+
+
 def test_run_id_ignores_spelled_out_defaults():
     cfg = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, "detectors": []}
     assert runner.run_id({**runner.DEFAULTS, **cfg}) == runner.run_id({**runner.DEFAULTS, **cfg, "seed": 0})

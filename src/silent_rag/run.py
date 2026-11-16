@@ -103,6 +103,20 @@ def run_id(cfg: dict) -> str:
     return hashlib.sha1(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
+def run_id_from_run_config(run_config: dict) -> str:
+    """The run_id that run() writes into every row for this run config, as loaded from YAML.
+
+    Hashes the raw config with DEFAULTS filled in; with `seeds`, `seed` is dropped so every
+    seed shares one run_id. Dataset names are hashed as written (no canonical()). The hash
+    is of JSON text, so a default must be written as DEFAULTS stores it: `min_drop: 0.0`
+    keeps the run_id, `min_drop: 0` (an int) changes it.
+    """
+    hashed = {**DEFAULTS, **run_config}
+    if "seeds" in run_config:
+        hashed.pop("seed")
+    return run_id(hashed)
+
+
 def check_severities(failures: dict) -> None:
     for f, sevs in failures.items():
         if not isinstance(sevs, list):
@@ -393,10 +407,7 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
     check_score_depth(cfg)
     check_final_revision(run_cfg, final)
     # one run_id for all seeds, so the replicates can be grouped together
-    hashed = {**DEFAULTS, **cfg}
-    if "seeds" in cfg:
-        hashed.pop("seed")
-    rid = run_id(hashed)
+    rid = run_id_from_run_config(cfg)
     per_seed = {key: v for key, v in cfg.items() if key != "seeds"}
     rows = []
     for name in datasets:
