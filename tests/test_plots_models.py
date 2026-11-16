@@ -7,7 +7,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from silent_rag.plots.figures_models import dose_response_ndcg10_drop  # noqa: E402
+from silent_rag.plots.figures_models import dose_response_ndcg10_drop, replacement_model_difference  # noqa: E402
 from silent_rag.plots.style import PALETTES, PlotStyle, new_figure  # noqa: E402
 
 BASE = 0.3
@@ -134,3 +134,86 @@ def test_unknown_scale_and_varying_baseline_raise():
     varying = DROPS.assign(baseline_ndcg10=np.where(DROPS["failure"].eq("m_a"), 0.3, 0.31))
     with pytest.raises(ValueError, match="baseline_ndcg10 must be the same in every row"):
         dose(varying)
+
+
+# table 16 (replacement_model_difference_table): m_b is closer to the baseline than m_a
+TABLE16 = pd.DataFrame({
+    "label": ["m_a", "m_b"], "replacement_model": ["org/a", "org/b"], "replacement_revision": ["r1", "r2"], "k": 10,
+    "mean_cosine": [0.80, 0.95], "mean_topk_shared": [4.0, 8.0], "topk_shared_ci_low": [3.5, 7.6],
+    "topk_shared_ci_high": [4.4, 8.3], "baseline_ndcg10": BASE, "switched_ndcg10": [0.25, 0.31],
+    "switched_ndcg10_ci_low": [0.22, 0.29], "switched_ndcg10_ci_high": [0.28, 0.33],
+})
+ERROR_BARS = "error bars: 95% CI over questions"
+
+
+def models_fig(table=TABLE16, **kwargs):
+    return replacement_model_difference(table, **kwargs)
+
+
+def points(ax):
+    """(x, y, colour, error bar low, high) per drawn model, in drawing order (the legend-only entry is NaN)."""
+    out = []
+    for container in ax.containers:
+        x, y = container[0].get_data()
+        if np.isnan(x[0]):
+            continue
+        (segment,) = container[2][0].get_segments()
+        out.append((x[0], y[0], container[0].get_color(), segment[0][1], segment[1][1]))
+    return out
+
+
+def test_model_difference_returns_a_figure_without_pyplot_or_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    plt.close("all")
+    fig = models_fig()
+    assert isinstance(fig, Figure) and len(fig.axes) == 1
+    assert plt.get_fignums() == [] and list(tmp_path.iterdir()) == []
+
+
+def test_shared_points_error_bars_references_and_mean_cosine_order():
+    ax = models_fig().axes[0]
+    okabe = PALETTES["okabe_ito"]
+    assert points(ax) == [(0.95, 8.0, okabe[0], 7.6, 8.3), (0.80, 4.0, okabe[1], 3.5, 4.4)]  # m_b first: higher cosine
+    assert ax.get_legend_handles_labels()[1] == ["all 10 shared", "identical vectors (mean cosine 1)", ERROR_BARS]
+    assert ax.get_xlim()[0] == 0 and ax.get_xlim()[1] >= 1
+    assert ax.get_xlabel() and ax.get_ylabel().startswith("Top-10 documents shared") and ax.get_title()
+
+
+def test_switched_ndcg10_points_and_baseline_line():
+    ax = models_fig(y="switched_ndcg10").axes[0]
+    assert [p[:2] for p in points(ax)] == [(0.95, 0.31), (0.80, 0.25)]
+    assert [p[3:] for p in points(ax)] == [pytest.approx((0.29, 0.33)), pytest.approx((0.22, 0.28))]
+    assert ax.get_legend_handles_labels()[1] == ["baseline nDCG@10 = 0.300", ERROR_BARS]
+
+
+def test_points_are_named_with_display_names_and_offsets():
+    s = PlotStyle({"display_names": {"label": {"m_a": "Model A"}}, "label_offsets": {"m_a": [-14, -18]}})
+    texts = {t.get_text(): tuple(t.xyann) for t in models_fig(style=s).axes[0].texts}
+    assert texts == {"Model A": (-14, -18), "m_b": (6, 6)}
+
+
+def test_model_difference_yaml_option_include_order_and_ax():
+    s = PlotStyle({"figures": {"replacement_model_difference": {"y": "switched_ndcg10"}}})
+    assert points(models_fig(style=s).axes[0])[0][1] == 0.31
+    assert [p[0] for p in points(models_fig(include={"labels": ["m_a"]}).axes[0])] == [0.80]
+    assert [p[0] for p in points(models_fig(style=PlotStyle({"order": {"labels": ["m_a"]}})).axes[0])] == [0.80, 0.95]
+    fig, axes = new_figure(PlotStyle.default().resolve("grid"), ncols=2)
+    assert models_fig(ax=axes[0], legend={"show": False}) is fig and points(axes[0]) and not axes[1].containers
+
+
+@pytest.mark.parametrize("y, top_value", [("shared", 10), ("switched_ndcg10", 0.33)])  # k line / highest CI end
+def test_model_difference_y_axis_starts_at_0(y, top_value):
+    low, high = models_fig(y=y).axes[0].get_ylim()
+    assert low == 0 and high > top_value  # the top is still autoscaled above the data and reference line
+    assert models_fig(y=y, ylim=[0.2, 12]).axes[0].get_ylim() == (0.2, 12)  # axes.ylim overrides
+
+
+def test_model_difference_errors():
+    with pytest.raises(ValueError, match="unknown y 'cosine'"):
+        models_fig(y="cosine")
+    with pytest.raises(ValueError, match=r"^replacement_model_difference: no rows to plot after include \{'labels'"):
+        models_fig(include={"labels": ["m_z"]})
+    with pytest.raises(ValueError, match="k must be the same in every row"):
+        models_fig(TABLE16.assign(k=[10, 5]))
+    with pytest.raises(ValueError, match="baseline_ndcg10 must be the same in every row"):
+        models_fig(TABLE16.assign(baseline_ndcg10=[0.3, 0.31]))
