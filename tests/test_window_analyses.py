@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from silent_rag.eval.detector_scoring import _auc_pool
+from silent_rag.eval.ground_truth import window_has_significant_ndcg10_drop
 from silent_rag.eval.window_analyses import (
     _comparisons,
     auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop,
@@ -11,6 +12,7 @@ from silent_rag.eval.window_analyses import (
     one_row_per_window,
     share_of_windows_with_significant_ndcg10_drop_by_severity,
     spearman_statistic_vs_window_mean_ndcg10_drop,
+    window_p_value_vs_mean_ndcg10_drop,
 )
 
 
@@ -34,6 +36,23 @@ def test_share_counts_windows_not_rows_and_includes_the_baseline():
     assert got.loc[("F1", 0.0), ["n_windows", "n_significant", "share_percent"]].tolist() == [4, 3, 75.0]
     assert got.loc[("F1", 0.05), ["n_windows", "n_significant", "share_percent"]].tolist() == [4, 1, 25.0]
     assert got.loc[("clean", 0.0), ["n_windows", "share_percent"]].tolist() == [4, 0.0]
+
+
+def test_p_value_table_has_one_row_per_window_and_the_labels_of_the_rule():
+    got = window_p_value_vs_mean_ndcg10_drop(table(CLEAN + F1), alpha=0.05, min_mean_ndcg10_drops=[0.0, 0.05])
+    assert len(got) == len(CLEAN + F1)  # two statistic rows per window in the input
+    for min_drop in (0.0, 0.05):
+        expected = window_has_significant_ndcg10_drop(got["p_value"].to_numpy(), got["ndcg_drop"].to_numpy(), 0.05, min_drop)
+        assert got[f"significant_at_min_drop_{min_drop}"].tolist() == expected.tolist()
+    assert got["significant_at_min_drop_0.0"].sum() == 3 and got["significant_at_min_drop_0.05"].sum() == 1
+
+
+def test_monte_carlo_flag_on_either_side_of_the_boundary():
+    # 2 * sqrt(0.05 * 0.95 / 2000) = 0.009747
+    p_values = [0.05 + 0.0097, 0.05 + 0.0098, 0.05 - 0.0097, 0.05 - 0.0098, 0.05]
+    windows = [("F1", 0.5, 0, t, 0.1, p) for t, p in enumerate(p_values)]
+    got = window_p_value_vs_mean_ndcg10_drop(table(windows), alpha=0.05, min_mean_ndcg10_drops=[0.0])
+    assert got.sort_values("trial")["p_value_within_2_monte_carlo_se_of_alpha"].tolist() == [True, False, True, False, True]
 
 
 def test_rows_of_one_window_must_agree():

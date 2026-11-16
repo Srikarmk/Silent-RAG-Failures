@@ -46,6 +46,28 @@ def share_of_windows_with_significant_ndcg10_drop_by_severity(runs, min_mean_ndc
     return result
 
 
+RUNNER_RESAMPLES = 2000  # paired_bootstrap's number of resamples in run_dataset (spec section 3, decision 3)
+
+
+def window_p_value_vs_mean_ndcg10_drop(runs, alpha: float, min_mean_ndcg10_drops) -> pd.DataFrame:
+    """One row per window: ndcg_drop, p_value, a significance label per minimum drop, and whether
+    the p-value is within two Monte Carlo standard errors of alpha.
+
+    Label columns are named significant_at_min_drop_<value> (e.g. significant_at_min_drop_0.02) and
+    come from window_has_significant_ndcg10_drop. p_value_within_2_monte_carlo_se_of_alpha is
+    |p_value - alpha| < 2 * sqrt(alpha * (1 - alpha) / 2000): the runner's p-value comes from 2000
+    bootstrap resamples, so a p-value this close to alpha could fall on either side of it in a rerun
+    with a different bootstrap seed.
+    """
+    windows = one_row_per_window(runs)
+    p, drop = windows["p_value"].to_numpy(), windows["ndcg_drop"].to_numpy()
+    for min_drop in min_mean_ndcg10_drops:
+        windows[f"significant_at_min_drop_{float(min_drop)}"] = window_has_significant_ndcg10_drop(p, drop, alpha, min_drop)
+    windows["p_value_within_2_monte_carlo_se_of_alpha"] = (
+        np.abs(p - alpha) < 2 * np.sqrt(alpha * (1 - alpha) / RUNNER_RESAMPLES))
+    return windows
+
+
 def median_seconds_per_statistic_evaluation(runs: pd.DataFrame) -> pd.DataFrame:
     """Median wall-clock seconds per evaluation of each monitoring statistic, over all rows
     (cost_s is measured per statistic), with the number of evaluations."""
