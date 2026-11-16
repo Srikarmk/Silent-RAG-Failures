@@ -1,7 +1,10 @@
 import pandas as pd
 import pytest
 
+from silent_rag.eval.detector_scoring import _auc_pool
 from silent_rag.eval.window_analyses import (
+    _comparisons,
+    auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop,
     auroc_statistic_harmful_vs_negative_windows_by_severity,
     check_mean_window_ndcg10_drop_against_reference,
     median_seconds_per_statistic_evaluation,
@@ -118,7 +121,9 @@ def test_auroc_without_positives_is_nan_with_a_note():
 
 MIXED = (BASE + [("F1", 0.5, seed, 0.10, 0.01, 1.0) for seed in SEEDS]
          + [("F1", 0.5, seed, 0.03, 0.01, 0.9, (2, 3)) for seed in (0, 1)])
-H1 = [("H1", 0.5, seed, 0.0, 0.5, 0.2) for seed in SEEDS] + [("H1", 0.5, 0, 0.1, 0.01, 0.95, (2, 3))]
+# non-significant H1 windows score 0.2, except seed 3's two at 0.95 (above the 0.9-score positives)
+H1 = ([("H1", 0.5, seed, 0.0, 0.5, 0.95 if seed == 3 else 0.2) for seed in SEEDS]
+      + [("H1", 0.5, 0, 0.1, 0.01, 0.95, (2, 3))])
 
 
 def test_auroc_both_negative_definitions_and_excluded_counts():
@@ -126,6 +131,31 @@ def test_auroc_both_negative_definitions_and_excluded_counts():
     cols = ["n_positive", "n_negative", "n_modified_windows_excluded", "n_negative_control_windows_excluded"]
     assert got.loc["unmodified", cols].tolist() == [12, 8, 0, 0]
     assert got.loc["unmodified_and_negative_controls", cols].tolist() == [12, 16, 0, 2]
+    # positives: 8 at 1.0, 4 at 0.9. With H1: 16 negatives, two of them (0.95) above the 0.9 positives
+    assert got.loc["unmodified", "auroc"] == 1.0
+    assert got.loc["unmodified_and_negative_controls", "auroc"] == pytest.approx((8 * 16 + 4 * 14) / (12 * 16))
+
+
+def test_auroc_by_min_drop_pools_severities():
+    windows = MIXED + [("F1", 0.1, seed, 0.0, 0.5, 0.1) for seed in SEEDS]  # severity 0.1: never significant
+    got = auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop(
+        scored(windows), "s", "F1", [0.0, 0.05], alpha=0.05, resamples=200, seed=0).set_index("min_mean_ndcg10_drop")
+    cols = ["n_positive", "n_negative", "n_modified_windows_excluded"]
+    assert got.loc[0.0, cols].tolist() == [12, 8, 8]
+    assert got.loc[0.05, cols].tolist() == [8, 8, 12]
+    assert (got["auroc"] == 1.0).all() and (got["negatives"] == "unmodified").all()
+
+
+@pytest.mark.parametrize("per_severity", [True, False], ids=["by-severity", "by-min-drop"])
+@pytest.mark.parametrize("min_drop", [0.0, 0.05])
+def test_counts_match_the_rows_auc_pool_scores(per_severity, min_drop):
+    windows = MIXED + H1 + [("F1", 0.1, seed, 0.0, 0.5, 0.1) for seed in SEEDS]
+    checked = 0
+    for _, _, pool, counts in _comparisons(scored(windows), "s", "F1", 0.05, min_drop, per_severity):
+        if counts["n_positive"] and counts["n_negative"]:
+            assert len(_auc_pool(pool, "s", "F1")) == counts["n_positive"] + counts["n_negative"]
+            checked += 1
+    assert checked >= 2  # both negatives definitions were compared
 
 
 def test_higher_min_drop_moves_windows_from_positive_to_excluded():

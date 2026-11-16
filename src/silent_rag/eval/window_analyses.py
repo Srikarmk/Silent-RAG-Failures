@@ -70,18 +70,50 @@ def auroc_statistic_harmful_vs_negative_windows_by_severity(
     so it reflects variability across seeds, not question-level sampling uncertainty. An empty
     class gives NaN plus a note; a CI that can't be formed (e.g. one seed) gives NaN CI plus a note.
     """
+    out = [{"severity": key, "negatives": name, **_auroc_and_ci(pool, statistic, failure, counts, resamples, seed), **counts}
+           for key, name, pool, counts in _comparisons(runs, statistic, failure, alpha, min_mean_ndcg10_drop, True)]
+    return pd.DataFrame(out)[["severity", *AUROC_COLUMNS]]
+
+
+def auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop(
+    runs, statistic: str, failure: str, min_drops, alpha: float, resamples: int, seed: int,
+) -> pd.DataFrame:
+    """AUROC of a monitoring statistic at each minimum drop, all severities of `failure` pooled:
+    the threshold-sensitivity curve. Positives, negatives, excluded windows, the CI and the
+    notes are as in auroc_statistic_harmful_vs_negative_windows_by_severity, with every severity
+    of the failure in place of one. Pooling across severities weights the result toward the
+    severities with more significant windows (usually the higher ones), so it is not an average
+    of the per-severity AUROCs.
+    """
+    out = [{"min_mean_ndcg10_drop": float(min_drop), "negatives": name,
+            **_auroc_and_ci(pool, statistic, failure, counts, resamples, seed), **counts}
+           for min_drop in min_drops
+           for _, name, pool, counts in _comparisons(runs, statistic, failure, alpha, min_drop, False)]
+    return pd.DataFrame(out)[["min_mean_ndcg10_drop", *AUROC_COLUMNS]]
+
+
+AUROC_COLUMNS = ["negatives", "auroc", "ci_low", "ci_high", "n_positive", "n_negative",
+                 "n_modified_windows_excluded", "n_negative_control_windows_excluded", "note"]
+
+
+def _comparisons(runs, statistic, failure, alpha, min_drop, per_severity: bool):
+    """Yield (severity or None, negatives definition, pool, counts) for each comparison, after
+    relabelling every window at alpha and min_drop. The pool holds the target windows and the
+    negatives; _auc_pool drops the target's non-significant windows itself."""
     rows = runs[runs["detector"].eq(statistic)].copy()
     rows["harmful"] = window_has_significant_ndcg10_drop(
-        rows["p_value"].to_numpy(), rows["ndcg_drop"].to_numpy(), alpha, min_mean_ndcg10_drop)
+        rows["p_value"].to_numpy(), rows["ndcg_drop"].to_numpy(), alpha, min_drop)
     clean = rows["failure"].eq("clean")
     control = ~rows["expected_harmful"] & ~clean
     target = rows["failure"].eq(failure)
     definitions = {"unmodified": clean}
     if control.any():
         definitions["unmodified_and_negative_controls"] = clean | (control & ~rows["harmful"])
-    out = []
-    for severity in sorted(rows.loc[target, "severity"].unique()):
-        at = target & rows["severity"].eq(severity)
+    if per_severity:
+        groups = [(float(s), target & rows["severity"].eq(s)) for s in sorted(rows.loc[target, "severity"].unique())]
+    else:
+        groups = [(None, target)]
+    for key, at in groups:
         for name, negatives in definitions.items():
             counts = {
                 "n_positive": int((at & rows["harmful"]).sum()),
@@ -89,11 +121,7 @@ def auroc_statistic_harmful_vs_negative_windows_by_severity(
                 "n_modified_windows_excluded": int((at & ~rows["harmful"]).sum()),
                 "n_negative_control_windows_excluded": int((control & rows["harmful"]).sum()) if name != "unmodified" else 0,
             }
-            pool = rows[at | negatives]  # _auc_pool drops this severity's non-significant windows
-            out.append({"severity": float(severity), "negatives": name,
-                        **_auroc_and_ci(pool, statistic, failure, counts, resamples, seed), **counts})
-    return pd.DataFrame(out)[["severity", "negatives", "auroc", "ci_low", "ci_high", "n_positive", "n_negative",
-                              "n_modified_windows_excluded", "n_negative_control_windows_excluded", "note"]]
+            yield key, name, rows[at | negatives], counts
 
 
 def _auroc_and_ci(pool, statistic, failure, counts, resamples, seed) -> dict:
@@ -120,12 +148,14 @@ def check_mean_window_ndcg10_drop_against_reference(runs, reference_values: dict
     the analysis YAML must record those next to the values. Returns the comparison table.
     """
     windows = one_row_per_window(runs)
+    missing_seeds = sorted(set(seeds) - set(windows["seed"]))
+    if missing_seeds:
+        raise ValueError(f"seeds {missing_seeds} are not in the results table")
     keep = windows["seed"].isin(seeds)
-    for name, wanted in (("seeds", seeds), ("trials", trials)):
-        missing = sorted(set(wanted) - set(windows[name[:-1]])) if wanted is not None else []
-        if missing:
-            raise ValueError(f"{name} {missing} are not in the results table")
     if trials is not None:
+        missing_trials = sorted(set(trials) - set(windows["trial"]))
+        if missing_trials:
+            raise ValueError(f"trials {missing_trials} are not in the results table")
         keep &= windows["trial"].isin(trials)
     observed = windows[keep].groupby(["failure", "severity"])["ndcg_drop"].agg(["mean", "size"])
     rows, problems = [], []
