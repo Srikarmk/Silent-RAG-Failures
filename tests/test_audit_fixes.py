@@ -341,6 +341,11 @@ def test_check_config_does_nothing_by_default():
     assert ParamInjector.check_config({"strength": 2}, {"model": "m", "revision": None}) is None
 
 
+def test_modified_document_row_indices_is_none_by_default():
+    assert "modified_document_row_indices" not in vars(ParamInjector)  # it doesn't override the hook
+    assert ParamInjector().modified_document_row_indices(40, 0.5, seed=0) is None
+
+
 class CheckedInjector(ParamInjector):
     name = "test_checked"
     calls = []

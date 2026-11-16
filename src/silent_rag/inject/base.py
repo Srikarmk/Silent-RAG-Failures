@@ -34,6 +34,12 @@ class Injector(ABC):
         params; `run_cfg` holds the clean `model` and `revision`. Raise ValueError to
         reject. Does nothing by default."""
 
+    def modified_document_row_indices(self, n_documents: int, severity: float, seed: int):
+        """Index rows that apply(state, severity, seed) changes, for per-question tables, or
+        None when the injector doesn't change specific document rows. Injectors that do
+        override it (PartialUpgrade does). Returns None by default."""
+        return None
+
     @abstractmethod
     def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState: ...
 
