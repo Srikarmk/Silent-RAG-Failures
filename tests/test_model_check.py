@@ -113,3 +113,25 @@ def test_unpinned_baseline_resolves_through_refs(cache):
 def test_replacement_revision_must_be_a_commit_hash(cache):
     with pytest.raises(ValueError, match="40-character lowercase commit hash"):
         check(cache, rev="main")
+
+
+# the pinned baseline and replacement models of experiments/analysis_f1/analysis_f1.yaml
+BASELINE = ("sentence-transformers/multi-qa-MiniLM-L6-cos-v1", "b207367332321f8e44f96e224ef15bc607f4dbf0")
+PINNED_REPLACEMENTS = [
+    ("sentence-transformers/all-MiniLM-L6-v2", "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"),
+    ("sentence-transformers/all-MiniLM-L12-v2", "a50ef00143b4d5391434df20ae11632588ac25be"),
+    ("BAAI/bge-small-en-v1.5", "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"),
+    ("thenlper/gte-small", "17e1f347d17fe144873b1201da91788898c639cd"),
+]
+NOT_CACHED = "is not in the local Hugging Face cache"  # the message cached_file() raises for an uncached file
+
+
+@pytest.mark.parametrize("model, revision", PINNED_REPLACEMENTS, ids=[m.split("/")[-1] for m, _ in PINNED_REPLACEMENTS])
+def test_pinned_replacement_models_pass_against_the_real_cache(model, revision):
+    """Reads the real local Hugging Face cache (small JSON and card files, no network)."""
+    try:
+        check_replacement_model(model, revision, *BASELINE)
+    except ValueError as e:
+        if NOT_CACHED in str(e):
+            pytest.skip(f"not in the local cache: {e}")
+        raise
