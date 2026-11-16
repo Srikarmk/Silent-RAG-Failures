@@ -11,7 +11,8 @@ import pandas as pd
 
 from silent_rag import data
 from silent_rag import run as runner
-from silent_rag.eval.ground_truth import per_query_ndcg
+from silent_rag.eval.ground_truth import bootstrap_ci, per_query_ndcg
+from silent_rag.eval.window_analyses import WINDOW
 from silent_rag.inject.base import REGISTRY as INJECTORS
 
 
@@ -80,3 +81,23 @@ def window_per_question_ndcg10_differences(run_config: dict, runs: pd.DataFrame,
             "question_id": question_ids, "baseline_ndcg10": clean_ndcg[idx], "modified_ndcg10": modified,
         }))
     return pd.concat(tables, ignore_index=True)
+
+
+def window_bootstrap_ci_vs_mean_ndcg10_drop(per_question_differences: pd.DataFrame, analysis_config: dict) -> pd.DataFrame:
+    """Mean nDCG@10 drop of each window with a 95% percentile CI, from
+    window_per_question_ndcg10_differences' table.
+
+    The CI is a question bootstrap within one window: bootstrap_ci resamples that window's
+    per-question drops (baseline - modified) with analysis_config["window_bootstrap"] (resamples,
+    seed; 2,000 resamples in the analysis config). It is separate from the runner's one-sided paired
+    test, whose p_value is stored in the results table. Columns: failure, severity, seed, trial,
+    mean_ndcg10_drop, ci_low, ci_high, n_questions.
+    """
+    boot = analysis_config["window_bootstrap"]
+    rows = []
+    for (failure, severity, seed, trial), window in per_question_differences.groupby(WINDOW, sort=True):
+        drops = window["baseline_ndcg10"].to_numpy() - window["modified_ndcg10"].to_numpy()
+        mean, low, high = bootstrap_ci(drops, n_boot=boot["resamples"], seed=boot["seed"])
+        rows.append({"failure": failure, "severity": severity, "seed": seed, "trial": trial,
+                     "mean_ndcg10_drop": mean, "ci_low": low, "ci_high": high, "n_questions": len(drops)})
+    return pd.DataFrame(rows)
