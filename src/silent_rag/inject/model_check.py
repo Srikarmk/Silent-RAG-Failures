@@ -21,15 +21,20 @@ DOCUMENT_PROMPT_NAMES = {"document", "passage", "corpus"}
 CARD_DOCUMENT_PREFIX = "passage: "  # e5; "relevant passages: " (bge's query instruction) does not contain it
 
 
+class ModelNotCachedError(ValueError):
+    """A file the check needs is not in the local Hugging Face cache. A ValueError, so callers
+    that turn ValueError into a config error (check_config) handle it unchanged."""
+
+
 def cached_file(repo: str, revision: str | None, filename: str, cache_dir=None, required: bool = True) -> Path | None:
-    """Path of `filename` in the local cache. Not cached: ValueError naming the file and how to fetch it.
-    Cached as absent from the repo: ValueError if required, else None."""
+    """Path of `filename` in the local cache. Not cached: ModelNotCachedError naming the file and
+    how to fetch it. Cached as absent from the repo: ValueError if required, else None."""
     path = try_to_load_from_cache(repo, filename, cache_dir=cache_dir, revision=revision)
     if isinstance(path, str):
         return Path(path)
     if path is None:
         rev = f" --revision {revision}" if revision else ""
-        raise ValueError(
+        raise ModelNotCachedError(
             f"{repo}@{revision or 'main'}: {filename} is not in the local Hugging Face cache; "
             f"fetch it with `huggingface-cli download {repo} {filename}{rev}`"
         )

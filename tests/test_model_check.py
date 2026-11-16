@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from silent_rag.inject.model_check import check_replacement_model
+from silent_rag.inject.model_check import ModelNotCachedError, check_replacement_model
 
 REV, BASE_REV = "a" * 40, "b" * 40
 BGE_CARD = 'query_instruction = "Represent this sentence for searching relevant passages: "'
@@ -88,6 +88,23 @@ def test_uncached_file_is_a_clear_error(cache, missing):
         check(cache)
 
 
+def test_uncached_file_raises_model_not_cached_error_a_value_error(cache):
+    write_model(cache, "alt/model", REV, skip=("README.md",))
+    with pytest.raises(ModelNotCachedError) as err:
+        check(cache)
+    assert isinstance(err.value, ValueError)  # check_config's `except ValueError` still catches it
+
+
+def test_file_absent_from_the_repo_is_not_a_model_not_cached_error(cache):
+    write_model(cache, "alt/model", REV, skip=("modules.json",))
+    no_exist = cache / "models--alt--model" / ".no_exist" / REV
+    no_exist.mkdir(parents=True)
+    (no_exist / "modules.json").touch()
+    with pytest.raises(ValueError, match="the repo has no modules.json") as err:
+        check(cache)
+    assert not isinstance(err.value, ModelNotCachedError)  # a real defect, so the real-cache test must not skip it
+
+
 def test_uncached_baseline_is_a_clear_error(tmp_path):
     write_model(tmp_path, "alt/model", REV)
     with pytest.raises(ValueError, match="base/model@.*modules.json is not in the local Hugging Face cache"):
@@ -123,15 +140,13 @@ PINNED_REPLACEMENTS = [
     ("BAAI/bge-small-en-v1.5", "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"),
     ("thenlper/gte-small", "17e1f347d17fe144873b1201da91788898c639cd"),
 ]
-NOT_CACHED = "is not in the local Hugging Face cache"  # the message cached_file() raises for an uncached file
 
 
 @pytest.mark.parametrize("model, revision", PINNED_REPLACEMENTS, ids=[m.split("/")[-1] for m, _ in PINNED_REPLACEMENTS])
 def test_pinned_replacement_models_pass_against_the_real_cache(model, revision):
-    """Reads the real local Hugging Face cache (small JSON and card files, no network)."""
+    """Reads the real local Hugging Face cache (small JSON and card files, no network).
+    Skips only when a file is not cached; any other ValueError fails."""
     try:
         check_replacement_model(model, revision, *BASELINE)
-    except ValueError as e:
-        if NOT_CACHED in str(e):
-            pytest.skip(f"not in the local cache: {e}")
-        raise
+    except ModelNotCachedError as e:
+        pytest.skip(f"not in the local cache: {e}")
