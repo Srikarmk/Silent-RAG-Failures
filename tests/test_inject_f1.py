@@ -5,13 +5,29 @@ import numpy as np
 import pytest
 
 from silent_rag import pipeline
+from silent_rag import run as runner
 from silent_rag.inject.base import REGISTRY
 from silent_rag.inject.f1_partial_upgrade import PartialUpgrade
+from silent_rag.inject.model_check import ModelNotCachedError
 from silent_rag.pipeline import Retriever
 from silent_rag.run import load_plugins
 from test_pipeline import HashEncoder, toy_dataset
 
 ALT = {"alt_model": "alt/model", "alt_revision": "abc123"}
+
+
+@pytest.fixture(autouse=True)
+def fake_model_checker(monkeypatch):
+    """check_config's cache lookup replaced by a recorder that accepts, so these tests stay offline.
+    Set `.error` to make it raise."""
+    def fake(*args):
+        fake.calls.append(args)
+        if fake.error is not None:
+            raise fake.error
+
+    fake.calls, fake.error = [], None
+    monkeypatch.setattr(PartialUpgrade, "model_checker", staticmethod(fake))
+    return fake
 
 
 def test_registered_under_its_config_name():
@@ -67,9 +83,26 @@ def test_check_config_rejects_the_clean_model_whatever_the_revision(alt_model, a
 
 @pytest.mark.parametrize("alt_model", ["intfloat/e5-small-v2", "intfloat/multilingual-e5-base", " INTFLOAT/E5-small-v2 "],
                          ids=["e5", "multilingual-e5", "case-and-spaces"])
-def test_check_config_rejects_models_that_need_a_document_prefix(alt_model):
+def test_check_config_rejects_models_that_need_a_document_prefix(alt_model, fake_model_checker):
     with pytest.raises(ValueError, match="needs a document prefix"):
         PartialUpgrade.check_config({"alt_model": alt_model, "alt_revision": HASH}, CLEAN)
+    assert fake_model_checker.calls == []  # the name check rejects e5 before any cache lookup
+
+
+@pytest.mark.parametrize("clean_revision", [CLEAN["revision"], None], ids=["pinned", "unpinned"])
+def test_check_config_passes_the_replacement_and_the_runs_baseline_to_the_checker(fake_model_checker, clean_revision):
+    PartialUpgrade.check_config(PINNED[1], {**CLEAN, "revision": clean_revision})
+    assert fake_model_checker.calls == [(PINNED[1]["alt_model"], PINNED[1]["alt_revision"], CLEAN["model"], clean_revision)]
+
+
+@pytest.mark.parametrize("error", [ValueError("no Normalize module"), ModelNotCachedError("README.md is not cached")],
+                         ids=["rejected", "not-cached"])
+def test_checker_errors_become_the_labelled_stop(fake_model_checker, error):
+    load_plugins()
+    fake_model_checker.error = error
+    failures = {"F1_label": ("F1_partial_upgrade", [0.5], dict(PINNED[1]))}
+    with pytest.raises(SystemExit, match=f"^F1_label: {error}$"):
+        runner.check_injectors(failures, CLEAN)
 
 
 class SmallEncoder:

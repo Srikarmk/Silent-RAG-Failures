@@ -12,6 +12,7 @@ import dataclasses
 import numpy as np
 
 from silent_rag.inject.base import Injector, register
+from silent_rag.inject.model_check import check_replacement_model
 from silent_rag.pipeline import Retriever, is_commit_hash
 from silent_rag.types import RetrievalState
 
@@ -23,6 +24,7 @@ PREFIX_MODELS = ("intfloat/e5-", "intfloat/multilingual-e5-")
 class PartialUpgrade(Injector):
     name = "F1_partial_upgrade"
     retriever_cls = Retriever  # tests swap in one with a fake encoder
+    model_checker = staticmethod(check_replacement_model)  # reads the local HF cache; tests swap in a fake
 
     def __init__(self, alt_model: str, alt_revision: str):
         self.alt_model = alt_model
@@ -42,6 +44,8 @@ class PartialUpgrade(Injector):
             raise ValueError(f"alt_model {alt_model!r} is the clean model; F1 needs a different model, whatever the revision")
         if alt_model.strip().casefold().startswith(PREFIX_MODELS):
             raise ValueError(f"alt_model {alt_model!r} needs a document prefix (e.g. 'passage: '), which F1 doesn't add")
+        # last, after the checks that need no files: Normalize, dimension and prefixes from the local cache
+        cls.model_checker(alt_model, alt_revision, run_cfg["model"], run_cfg["revision"])
 
     def build_replacement_model_retriever(self, baseline_retriever, query_prefix: str | None = None):
         """A retriever for the replacement model with the baseline retriever's settings.
