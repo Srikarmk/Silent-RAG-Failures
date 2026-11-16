@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from silent_rag.eval.window_analyses import (
+    auroc_statistic_harmful_vs_negative_windows_by_severity,
     check_mean_window_ndcg10_drop_against_reference,
     median_seconds_per_statistic_evaluation,
     one_row_per_window,
@@ -72,3 +73,62 @@ def test_reference_check_fails_when_other_seeds_are_included():
 def test_reference_check_reports_missing_conditions_and_seeds(reference, seeds, match):
     with pytest.raises(ValueError, match=match):
         check_mean_window_ndcg10_drop_against_reference(table(REF_RUNS), reference, seeds=seeds)
+
+
+def test_reference_check_filters_trials_like_seeds():
+    runs = table(REF_RUNS[:3] + [("F1", 0.5, 0, 1, 0.300, 0.01)])  # trial 1 is far off
+    got = check_mean_window_ndcg10_drop_against_reference(runs, REFERENCE, seeds=[0, 1, 2], trials=[0])
+    assert got["n_windows"].iloc[0] == 3
+    with pytest.raises(ValueError, match=r"trials \[5\] are not in the results table"):
+        check_mean_window_ndcg10_drop_against_reference(runs, REFERENCE, seeds=[0, 1, 2], trials=[0, 5])
+
+
+def scored(windows):
+    """ResultRow columns for one statistic. windows: (failure, severity, seed, drop, p, score[, trials]),
+    trials (0, 1) unless given, so extra windows of one seed get their own trials."""
+    return pd.DataFrame([
+        {"run_id": "r", "dataset": "nfcorpus", "model": "m", "model_revision": "v", "window_size": 100,
+         "detector": "s", "failure": f, "severity": sev, "seed": seed, "trial": t, "ndcg_drop": d, "p_value": p,
+         "score": score, "expected_harmful": f not in ("clean", "H1"), "harmful": False}
+        for f, sev, seed, d, p, score, *trials in windows for t in (trials[0] if trials else (0, 1))])
+
+
+SEEDS = range(4)
+BASE = [("clean", 0.0, seed, 0.0, 1.0, 0.0) for seed in SEEDS]
+
+
+def auroc(windows, min_drop=0.0):
+    return auroc_statistic_harmful_vs_negative_windows_by_severity(
+        scored(windows), "s", "F1", min_drop, alpha=0.05, resamples=200, seed=0)
+
+
+def test_auroc_perfect_separation_and_identical_scores():
+    got = auroc(BASE + [("F1", 0.5, seed, 0.1, 0.01, 1.0) for seed in SEEDS])
+    assert got[["auroc", "ci_low", "ci_high", "n_positive", "n_negative"]].iloc[0].tolist() == [1.0, 1.0, 1.0, 8, 8]
+    assert got["negatives"].tolist() == ["unmodified"]  # no negative controls, one definition
+    same = [(f, s, seed, d, p, 0.5) for f, s, seed, d, p, _ in BASE + [("F1", 0.5, seed, 0.1, 0.01, 1.0) for seed in SEEDS]]
+    assert auroc(same)["auroc"].iloc[0] == 0.5
+
+
+def test_auroc_without_positives_is_nan_with_a_note():
+    got = auroc(BASE + [("F1", 0.1, seed, 0.0, 0.5, 1.0) for seed in SEEDS]).iloc[0]
+    assert pd.isna(got["auroc"]) and got["note"] == "undefined: no positive windows"
+    assert (got["n_positive"], got["n_modified_windows_excluded"]) == (0, 8)
+
+
+MIXED = (BASE + [("F1", 0.5, seed, 0.10, 0.01, 1.0) for seed in SEEDS]
+         + [("F1", 0.5, seed, 0.03, 0.01, 0.9, (2, 3)) for seed in (0, 1)])
+H1 = [("H1", 0.5, seed, 0.0, 0.5, 0.2) for seed in SEEDS] + [("H1", 0.5, 0, 0.1, 0.01, 0.95, (2, 3))]
+
+
+def test_auroc_both_negative_definitions_and_excluded_counts():
+    got = auroc(MIXED + H1).set_index("negatives")
+    cols = ["n_positive", "n_negative", "n_modified_windows_excluded", "n_negative_control_windows_excluded"]
+    assert got.loc["unmodified", cols].tolist() == [12, 8, 0, 0]
+    assert got.loc["unmodified_and_negative_controls", cols].tolist() == [12, 16, 0, 2]
+
+
+def test_higher_min_drop_moves_windows_from_positive_to_excluded():
+    loose, strict = auroc(MIXED, min_drop=0.0).iloc[0], auroc(MIXED, min_drop=0.05).iloc[0]
+    assert (loose["n_positive"], loose["n_modified_windows_excluded"]) == (12, 0)
+    assert (strict["n_positive"], strict["n_modified_windows_excluded"]) == (8, 4)  # the 0.03-drop windows

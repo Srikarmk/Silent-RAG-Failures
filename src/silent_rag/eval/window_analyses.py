@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from silent_rag.eval.detector_scoring import bootstrap_auroc_ci, compute_auroc
 from silent_rag.eval.ground_truth import window_has_significant_ndcg10_drop
 
 WINDOW = ["failure", "severity", "seed", "trial"]
@@ -51,20 +52,82 @@ def median_seconds_per_statistic_evaluation(runs: pd.DataFrame) -> pd.DataFrame:
     return table.rename_axis("statistic").reset_index().sort_values("median_seconds", ignore_index=True)
 
 
-def check_mean_window_ndcg10_drop_against_reference(runs, reference_values: dict, seeds, decimals: int = 3) -> pd.DataFrame:
+def auroc_statistic_harmful_vs_negative_windows_by_severity(
+    runs, statistic: str, failure: str, min_mean_ndcg10_drop: float, alpha: float, resamples: int, seed: int,
+) -> pd.DataFrame:
+    """AUROC of a monitoring statistic separating harmful from negative windows, per severity of `failure`.
+
+    Every window is first relabelled with window_has_significant_ndcg10_drop at `alpha` and
+    `min_mean_ndcg10_drop`. At each severity of the target failure:
+    - positives: that severity's windows with a significant drop;
+    - negatives: all unmodified windows (whatever their label), plus, in the
+      "unmodified_and_negative_controls" rows, negative-control windows without a significant drop;
+    - excluded: that severity's windows without a significant drop (n_modified_windows_excluded) and
+      negative-control windows with one (n_negative_control_windows_excluded; 0 in the "unmodified"
+      rows, where negative controls are not part of the comparison).
+    The second definition appears only when the table has negative controls. The CI is a
+    seed-cluster bootstrap (bootstrap_auroc_ci): it resamples whole seeds over the same questions,
+    so it reflects variability across seeds, not question-level sampling uncertainty. An empty
+    class gives NaN plus a note; a CI that can't be formed (e.g. one seed) gives NaN CI plus a note.
+    """
+    rows = runs[runs["detector"].eq(statistic)].copy()
+    rows["harmful"] = window_has_significant_ndcg10_drop(
+        rows["p_value"].to_numpy(), rows["ndcg_drop"].to_numpy(), alpha, min_mean_ndcg10_drop)
+    clean = rows["failure"].eq("clean")
+    control = ~rows["expected_harmful"] & ~clean
+    target = rows["failure"].eq(failure)
+    definitions = {"unmodified": clean}
+    if control.any():
+        definitions["unmodified_and_negative_controls"] = clean | (control & ~rows["harmful"])
+    out = []
+    for severity in sorted(rows.loc[target, "severity"].unique()):
+        at = target & rows["severity"].eq(severity)
+        for name, negatives in definitions.items():
+            counts = {
+                "n_positive": int((at & rows["harmful"]).sum()),
+                "n_negative": int(negatives.sum()),
+                "n_modified_windows_excluded": int((at & ~rows["harmful"]).sum()),
+                "n_negative_control_windows_excluded": int((control & rows["harmful"]).sum()) if name != "unmodified" else 0,
+            }
+            pool = rows[at | negatives]  # _auc_pool drops this severity's non-significant windows
+            out.append({"severity": float(severity), "negatives": name,
+                        **_auroc_and_ci(pool, statistic, failure, counts, resamples, seed), **counts})
+    return pd.DataFrame(out)[["severity", "negatives", "auroc", "ci_low", "ci_high", "n_positive", "n_negative",
+                              "n_modified_windows_excluded", "n_negative_control_windows_excluded", "note"]]
+
+
+def _auroc_and_ci(pool, statistic, failure, counts, resamples, seed) -> dict:
+    nan = float("nan")
+    for cls in ("positive", "negative"):
+        if counts[f"n_{cls}"] == 0:
+            return {"auroc": nan, "ci_low": nan, "ci_high": nan, "note": f"undefined: no {cls} windows"}
+    try:
+        auroc, low, high = bootstrap_auroc_ci(pool, statistic, failure, n_boot=resamples, seed=seed)
+    except ValueError as e:
+        return {"auroc": compute_auroc(pool, statistic, failure), "ci_low": nan, "ci_high": nan, "note": f"no CI: {e}"}
+    return {"auroc": auroc, "ci_low": low, "ci_high": high, "note": ""}
+
+
+def check_mean_window_ndcg10_drop_against_reference(runs, reference_values: dict, seeds, decimals: int = 3,
+                                                    trials=None) -> pd.DataFrame:
     """Compare the mean window nDCG@10 drop per (failure, severity) with reference values, using
-    only the windows of `seeds`. Raises ValueError listing observed vs expected on any mismatch at
-    `decimals`, a missing (failure, severity), or a requested seed absent from the table.
+    only the windows of `seeds` (and of `trials`, default all). Raises ValueError listing observed
+    vs expected on any mismatch at `decimals`, a missing (failure, severity), or a requested seed
+    or trial absent from the table.
 
     reference_values: {failure label: {severity: expected mean drop}}. The reference values hold
-    only for the seeds they were computed on (notebook 07: seeds 0-2), so the analysis YAML must
-    record those seeds next to the values. Returns the comparison table.
+    only for the seeds (and trials) they were computed on (notebook 07: seeds 0-2, trials 0-19), so
+    the analysis YAML must record those next to the values. Returns the comparison table.
     """
     windows = one_row_per_window(runs)
-    missing_seeds = sorted(set(seeds) - set(windows["seed"]))
-    if missing_seeds:
-        raise ValueError(f"seeds {missing_seeds} are not in the results table")
-    observed = windows[windows["seed"].isin(seeds)].groupby(["failure", "severity"])["ndcg_drop"].agg(["mean", "size"])
+    keep = windows["seed"].isin(seeds)
+    for name, wanted in (("seeds", seeds), ("trials", trials)):
+        missing = sorted(set(wanted) - set(windows[name[:-1]])) if wanted is not None else []
+        if missing:
+            raise ValueError(f"{name} {missing} are not in the results table")
+    if trials is not None:
+        keep &= windows["trial"].isin(trials)
+    observed = windows[keep].groupby(["failure", "severity"])["ndcg_drop"].agg(["mean", "size"])
     rows, problems = [], []
     for failure, by_severity in reference_values.items():
         for severity, expected in by_severity.items():
