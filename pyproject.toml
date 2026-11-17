@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pre-commit", "nbstripout"]
+judge = ["anthropic"]  # the LLM judge (#26); nothing else calls an API
 
 [build-system]
 requires = ["setuptools>=61"]
