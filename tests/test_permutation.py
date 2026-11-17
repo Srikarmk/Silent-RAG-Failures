@@ -21,13 +21,13 @@ BASE = [f"{p}_{f}" for p in ("ks", "psi") for f in FEATURES] + ["qpp_max", "qpp_
 
 
 def test_every_feature_drift_detector_has_a_permutation_variant():
-    assert len(BASE) == 11
+    assert len(BASE) == 2 * len(FEATURES) + 3
     for name in BASE:
         base, perm = REGISTRY[name], REGISTRY[f"{name}_perm"]
         assert issubclass(perm, Permutation) and issubclass(perm, base)
         assert perm.feature == base.feature
         assert not issubclass(base, Permutation)  # the plain detectors are untouched
-    assert len([n for n in REGISTRY if n.endswith("_perm")]) == 11
+    assert len([n for n in REGISTRY if n.endswith("_perm")]) == len(BASE)
 
 
 def test_plain_scores_are_unchanged():
