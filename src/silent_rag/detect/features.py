@@ -79,6 +79,80 @@ class FeatureDrift(Detector):
     @abstractmethod
     def compare(self, reference: np.ndarray, current: np.ndarray) -> float: ...
 
+    def statistic(self, reference: np.ndarray, current: np.ndarray) -> float:
+        """The detector's statistic as a function of the two samples and nothing else.
+
+        The permutation test calls this on reshuffled halves, so it must not use
+        anything fit() stored. On the fitted reference it has to equal compare().
+        Detectors whose compare() already depends only on its arguments inherit this.
+        """
+        return self.compare(reference, current)
+
+
+def permutation_p_value(statistic, reference: np.ndarray, current: np.ndarray,
+                        permutations: int, rng: np.random.Generator) -> float:
+    """Upper-tail permutation p-value of statistic(reference, current) (#73).
+
+    Pools the two samples, reshuffles, splits back into the original sizes and
+    recomputes. p = (1 + number of reshuffles at least as large as the observed
+    statistic) / (permutations + 1), so it is never 0 and its smallest value is
+    1 / (permutations + 1).
+
+    The null is that the reference and window values are exchangeable: one pool,
+    split at random. A small p says the window's values differ from the
+    reference's. It says nothing about whether retrieval got worse.
+    """
+    reference = np.asarray(reference, dtype=float)
+    current = np.asarray(current, dtype=float)
+    observed = float(statistic(reference, current))
+    pooled = np.concatenate([reference, current])
+    n = len(reference)
+    # a reshuffle that reproduces the observed split can differ from it by float noise
+    floor = observed - 1e-12 * max(1.0, abs(observed))
+    hits = 0
+    for _ in range(permutations):
+        shuffled = rng.permutation(pooled)
+        hits += float(statistic(shuffled[:n], shuffled[n:])) >= floor
+    return (1 + hits) / (permutations + 1)
+
+
+class Permutation:
+    """Mixin that turns a FeatureDrift detector into its permutation test (#73).
+
+    score() is 1 - p, so higher still means "more likely something changed" and an
+    alarm at level alpha is score > 1 - alpha. `permutations` sets the resolution of
+    p; the default 999 gives steps of 0.001.
+
+    Use it for thresholding, not for ranking: 1 - p saturates at
+    1 - 1 / (permutations + 1) for any clear shift, so AUROC should keep coming from
+    the plain statistic. The same reshuffles are used for every window (fixed `seed`),
+    so results are reproducible.
+    """
+
+    def __init__(self, permutations: int = 999, seed: int = 0, **kwargs):
+        if isinstance(permutations, bool) or not isinstance(permutations, int) or permutations < 1:
+            raise ValueError(f"permutations has to be a positive integer, got {permutations!r}")
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            raise ValueError(f"seed has to be a non-negative integer, got {seed!r}")
+        super().__init__(**kwargs)
+        self.permutations = permutations
+        self.seed = seed
+
+    def p_value(self, window: Observation) -> float:
+        if not hasattr(self, "reference_"):
+            raise RuntimeError(f"{self.name} needs fit(reference) before it can score")
+        rng = np.random.default_rng(self.seed)
+        return permutation_p_value(self.statistic, self.reference_, self.values(window), self.permutations, rng)
+
+    def score(self, window: Observation) -> float:
+        return 1.0 - self.p_value(window)
+
+
+def register_permutation(base: type[FeatureDrift]) -> type[FeatureDrift]:
+    """Registers `<base.name>_perm`: the same feature and statistic, scored by 1 - p."""
+    attrs = {"name": f"{base.name}_perm", "__module__": base.__module__, "__doc__": Permutation.__doc__}
+    return register(type(f"{base.__name__}_perm", (Permutation, base), attrs))
+
 
 def register_per_feature(base: type[FeatureDrift], prefix: str) -> dict[str, type[FeatureDrift]]:
     """One registered subclass of `base` per feature, named `<prefix>_<feature>`."""
