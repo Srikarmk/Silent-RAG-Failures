@@ -73,6 +73,16 @@ We agreed on `min_drop = 0.02` for the main evaluation, with `0.01` as a sensiti
 
 At 0.02, none of the negative-control windows were labelled harmful in the development run. But this does not prove equivalence within a defined margin. That requires a separate equivalence test.
 
+**Exploratory equivalence check** (#16)
+
+We ran a seed-level equivalence check on the negative controls with a ±0.02 margin. The margin is separate from `min_drop`: `min_drop` decides which windows are labelled harmful, while the margin asks whether a control's change in nDCG@10 is close enough to zero to call equivalent.
+
+- Mixed truncation: equivalent at all three severities
+- Full model swaps: not worse than clean, with improved nDCG@10
+- Query topic shift: not tested, since its damage is zero by construction
+
+The margin was not agreed on before the check, so these are exploratory findings (*dev*, #16).
+
 The main trade-off is F2. Its damage is real but small. At `min_drop = 0.02`, only 0%, 5%, and 24% of F2 windows are labelled harmful at severities 0.1, 0.5, and 0.9. At 0.01, those rates increase to 0%, 66%, and 80% (*dev*, #52).
 
 A higher threshold can also make AUROC look better by excluding harder cases. We should always report the number of harmful windows alongside detector performance.
