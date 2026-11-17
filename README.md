@@ -9,7 +9,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?style=flat-square&logo=python&logoColor=white)
 ![Data](https://img.shields.io/badge/data-BEIR-10b981?style=flat-square)
 
-[Motivation](#motivation) · [Approach](#approach) · [Failures](#failure-families) · [Detectors](#detectors) · [Evaluation](#evaluation) · [Early results](#early-results) · [Timeline](#timeline)
+[Motivation](#motivation) · [Approach](#approach) · [Failures](#failure-families) · [Detectors](#detectors) · [Evaluation](#evaluation) · [Results so far](#results-so-far) · [Timeline](#timeline)
 
 </div>
 
@@ -24,7 +24,7 @@ A few ways this happens in practice:
 - chunking or preprocessing settings change partway through the corpus
 - users start asking about things the corpus doesn't cover
 
-Production systems don't have relevance labels, so you can't just track nDCG. Teams rely on label-free signals instead, like drift statistics or retrieval scores, and it isn't clear which of these actually catch real damage. That is the question this project tries to answer.
+Production systems don't have relevance labels, so you can't just track nDCG. Teams rely on label-free signals instead, like drift statistics or retrieval scores. This project measures which of those signals catch real damage, and how often they fire on changes that did no harm.
 
 **What we plan to release**
 
@@ -50,33 +50,43 @@ flowchart LR
 
 ## Failure families
 
-Each failure is applied at increasing severity, from 10% up to 90% of the corpus or query traffic.
+Each failure is applied at increasing severity: the share of the corpus or query traffic affected, from 0.1 up to 1.0.
 
-| ID | Failure | How we simulate it |
-|---|---|---|
-| F1 | Partial embedding upgrade | Mix vectors from two same-dimension models in one index |
-| F2 | Stale documents | Outdated content from HoH, plus injected distractors |
-| F3 | Chunking change | Re-chunk only part of the corpus |
-| F4 | Query shift | Move query traffic toward topics outside the corpus |
-| F5 | Config mismatch | Drop the query prefix, turn off vector normalization, etc. |
+| ID | Failure | How we simulate it | Status |
+|---|---|---|---|
+| F1 | Partial embedding upgrade | Mix vectors from two same-dimension models in one index | On `main` |
+| F2 | Stale documents | Add off-topic distractors from ArguAna; stale content from HoH is still to do | Distractors on `main` |
+| F3 | Chunking change | Re-chunk only part of the corpus, on MLDR's long documents | In review ([#82](https://github.com/Srikarmk/Silent-RAG-Failures/pull/82)) |
+| F4 | Query shift | Move query traffic toward topics outside the corpus | Scoring rule open ([#13](https://github.com/Srikarmk/Silent-RAG-Failures/issues/13)) |
+| F5 | Config mismatch | Drop the query prefix, turn off vector normalization, etc. | Open ([#14](https://github.com/Srikarmk/Silent-RAG-Failures/issues/14)) |
 
 **F1** replaces a random `severity` fraction of index rows with the same documents embedded by `alt_model`. Queries stay on the clean model. `alt_model` and `alt_revision` (a lowercase 40-character commit hash) have no defaults and must be in the config, and each replacement model gets its own label. F1 rejects an `alt_model` that is the clean model (compared ignoring case, whatever the revisions). It also rejects models that need a document prefix F1 doesn't add: `intfloat/e5-*` and `intfloat/multilingual-e5-*`, whose model cards require `passage: `. Limitations: model names are compared as written, so `all-MiniLM-L6-v2` and `sentence-transformers/all-MiniLM-L6-v2` count as different. The prefix list only blocks the models it names, so an unlisted model that needs a prefix, or an e5 copy under another org, gets through. Models are added to the list only with evidence from their card, and every replacement model is pinned in a reviewed config.
 
-We also run **negative controls**: changes that move the data around without hurting retrieval. A good detector should stay quiet on these, so they tell us its false-alarm rate. Which ones we use is still being decided in [#9](https://github.com/Srikarmk/Silent-RAG-Failures/issues/9).
+We also run **negative controls**: changes that move the data around without hurting retrieval. A good detector stays quiet on these, so every alarm on one is a false alarm. There are four, from three injectors ([#76](https://github.com/Srikarmk/Silent-RAG-Failures/pull/76)):
+
+| Control | What changes |
+|---|---|
+| `H_mixed_truncation` | Part of the corpus is re-embedded at 512 tokens instead of 256 |
+| `H_full_swap` | Documents and queries both move to another model (all-MiniLM, bge-small). Retrieval gets better |
+| `H_query_topic_shift` | A share of traffic moves to one topic cluster of the real queries |
+
+When the queries change, each query asked is compared with its own clean result, so the topic shift does no damage by construction.
 
 ## Detectors
 
-| Family | Detectors |
-|---|---|
-| Drift statistics (ML) | PSI, Kolmogorov–Smirnov test, MMD, domain classifier |
-| Query performance prediction (IR) | Score-based signals, canary queries |
-| Other | Re-embedding check, LLM-as-judge |
+| Family | On `main` | Planned or in review |
+|---|---|---|
+| Drift statistics (ML) | KS and PSI on four per-query score features (`ks_top1`, `psi_mean10`, ...), each with a permutation-test variant (`ks_top1_perm`, ...); domain classifiers on queries and on retrieved documents | MMD ([#20](https://github.com/Srikarmk/Silent-RAG-Failures/issues/20)) |
+| Query performance prediction (IR) | `qpp_max`, `qpp_gap`, `qpp_nqc` | Canary queries ([#24](https://github.com/Srikarmk/Silent-RAG-Failures/issues/24)) |
+| Other | `re_embed` (re-embeds a sample of stored documents), `llm_judge` (a local model rates the top 5 for 100 queries; free to run) | `combined_scores` ([#80](https://github.com/Srikarmk/Silent-RAG-Failures/pull/80)), gated `two_stage` ([#87](https://github.com/Srikarmk/Silent-RAG-Failures/pull/87)) |
 
-If there's time, we'll also test whether an agentic retriever that searches more than usual is itself a sign of hidden damage.
+`python -m silent_rag.run --list` prints every registered detector.
+
+We also tested, as a stretch goal, whether an agentic retriever searches more when retrieval is damaged ([#35](https://github.com/Srikarmk/Silent-RAG-Failures/issues/35)). It does, by about 0.1 searches per question, which is too small to compete with the free score detectors.
 
 ## Evaluation
 
-The ground truth is the drop in **nDCG@10** from the clean baseline. Each check runs on a sampled window of queries, repeated over many trials per condition. A condition counts as harmful when its drop is significant under a paired bootstrap test.
+The ground truth is the drop in **nDCG@10** from the clean baseline. Each check runs on a sampled window of queries, repeated over many trials per condition. A window counts as harmful when its drop is significant under a one-sided paired bootstrap test and at least 0.02 (`min_drop`, agreed in [#52](https://github.com/Srikarmk/Silent-RAG-Failures/issues/52); [#88](https://github.com/Srikarmk/Silent-RAG-Failures/pull/88) sets it in the configs, which still default to 0 until then). Thresholds come only from clean windows.
 
 Each detector is scored on:
 
@@ -94,23 +104,15 @@ We'll also report how big an nDCG@10 drop the common "PSI > 0.25" rule of thumb 
 | NFCorpus | 3,633 medical documents | Development. All detector tuning happens here |
 | SciFact | 5,183 scientific abstracts | Held-out evaluation |
 | FiQA | 57,638 financial forum posts | Held-out evaluation |
-| MLDR | long documents | Long-document behavior |
-| HoH | real outdated content | Source for the stale-document failure (F2) |
+| MLDR | 20,000 sampled long documents | F3, which only does damage on long documents |
+| ArguAna | 8,674 argument passages | Off-topic distractors for F2 |
+| HoH | real outdated content | Planned source for stale documents in F2 |
 
 SciFact and FiQA are never used for tuning, so the final numbers show how well the detectors generalize to data they haven't seen.
 
-## Early results
+## Results so far
 
-Our first pass over SciFact is in [`notebooks/scifact_eda.ipynb`](notebooks/scifact_eda.ipynb), using `multi-qa-MiniLM-L6-cos-v1`.
-
-| | Queries | Documents |
-|---|---:|---:|
-| Median length (tokens) | 21 | 316 |
-| Max length (tokens) | 79 | 1,939 |
-| Longer than 512 tokens (the model's hard limit) | 0 | 455 (8.8%) |
-| Longer than ~250 tokens (what the model was trained on) | 0 | 3,793 (73.2%) |
-
-Query length is not a concern. Document length is: most abstracts are longer than the inputs this model was trained on.
+Everything below is on NFCorpus, the development set. SciFact and FiQA have only been used for the clean baseline.
 
 **Baseline.** We kept `multi-qa-MiniLM-L6-cos-v1` and embed title + text truncated at 256 tokens, with no chunking ([#5](https://github.com/Srikarmk/Silent-RAG-Failures/issues/5)). The goal is to evaluate detectors, not to get the best retriever. Clean nDCG@10 with exact cosine search in FAISS:
 
@@ -124,18 +126,35 @@ Truncating at 256 instead of 512 tokens made no significant difference on any of
 
 **Window size.** Each check scores a window of **100 queries** ([#4](https://github.com/Srikarmk/Silent-RAG-Failures/issues/4)). On NFCorpus, that's enough for the paired bootstrap to catch an nDCG@10 drop of about 0.06 in 80% of windows while staying under a 5% false-alarm rate. Windows of 25 or 50 queries only reliably catch drops of 0.10–0.13, and alarm more often than 5%. Both analyses are in [`experiments/baseline/window_size.py`](experiments/baseline/window_size.py).
 
+**Full development run** ([#79](https://github.com/Srikarmk/Silent-RAG-Failures/pull/79)): 10 seeds, 20 windows per condition and seed, every detector, 100,800 rows, 11.6 hours on a laptop CPU.
+
+F1 damage depends on the replacement model. At severity 0.5 the nDCG@10 drop is 0.080 with bge-small and 0.043 with all-MiniLM-L6, and both are harmful in at least 98% of windows. F2 distractors drop it by 0.012, harmful in 5% of windows.
+
+AUROC of harmful windows against clean and harmless control windows:
+
+| Detector | F1 bge-small | F1 all-MiniLM-L6 | F2 | Median cost per window |
+|---|---:|---:|---:|---:|
+| `re_embed` | 0.87 | 0.79 | 0.22 | 4.3 s |
+| `qpp_max` | 0.85 | 0.86 | 0.44 | 0.3 ms |
+| `ks_top1` | 0.72 | 0.71 | 0.32 | 1.3 ms |
+| `psi_mean10` | 0.70 | 0.67 | 0.35 | 0.3 ms |
+
+Against clean windows alone `re_embed` scores 1.00 on every F1 partner, but it fires on every model swap and truncation change too, harmful or not. None of these detectors finds F2. Every detector fires on at least one harmless control: the bge-small swap, which improves retrieval, sets off all of them except `qpp_max`, and the topic shift sets off `ks_top1` in 60% of windows at severity 0.5.
+
+A threshold at the 95th percentile of clean scores gives 5–10% false alarms averaged over seeds, but each seed has its own reference window, and one or two seeds see 20–75% ([#91](https://github.com/Srikarmk/Silent-RAG-Failures/pull/91)).
+
 ## Timeline
 
 We wrap up on **December 1**. Each milestone below has its issues on the [project board](https://github.com/users/Srikarmk/projects/2).
 
 | Due | Milestone | Done when | Status |
 |---|---|---|---|
-| Oct 18 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | Done (#8 pending) |
-| Oct 31 | [Failure injection](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/2) | F1–F5 plus negative controls; nDCG@10 drops steadily with severity, negative controls don't | |
-| Nov 11 | [Drift + QPP detectors](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/3) | Implemented and tuned on NFCorpus | |
-| Nov 18 | [Canary, re-embed, LLM judge](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/4) | Implemented, with cost per check recorded for every detector | |
+| Nov 20 | [Baseline](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/1) | Model and chunking fixed; clean nDCG@10 with CIs on SciFact, FiQA, NFCorpus | Done except the loader issue (#10) |
+| Nov 20 | [Failure injection](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/2) | F1–F5 plus negative controls; nDCG@10 drops steadily with severity, negative controls don't | F1, F2 and the controls merged; F3 in review; F4, F5 open |
+| Nov 20 | [Drift + QPP detectors](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/3) | Implemented and tuned on NFCorpus | Implemented; thresholds in review (#91); MMD open |
+| Nov 20 | [Canary, re-embed, LLM judge](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/4) | Implemented, with cost per check recorded for every detector | `re_embed` and `llm_judge` merged; full dev run in review (#79); canary queries open |
 | Nov 24 | [Held-out evaluation](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/5) | AUROC, earliness and false alarms on SciFact and FiQA; heatmap; PSI analysis | |
-| Dec 1 | [Release](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/6) | Benchmark, monitoring guide, final report (agentic extension only if there's time) | |
+| Dec 1 | [Release](https://github.com/Srikarmk/Silent-RAG-Failures/milestone/6) | Benchmark, monitoring guide, final report | Guide and report outline in draft (#84, #86) |
 
 ## Running it
 
@@ -249,9 +268,9 @@ src/silent_rag/
   types.py            Dataset, RetrievalState, Observation (no labels)
   data.py             BEIR loaders, pinned revisions
   pipeline.py         embed, cache, index, search
-  inject/             failure injectors (F1-F5, H1-H3)
-  detect/             label-free detectors
-  eval/               ground truth (nDCG drop, bootstrap), window-size analysis, results table
+  inject/             failure injectors (F1, F2) and negative controls (H_*)
+  detect/             label-free detectors and the LLM judge
+  eval/               ground truth (nDCG drop, bootstrap), detector scoring, permutation tests, window size, results table
   run.py              experiment runner
 configs/              dev.yaml (NFCorpus), final.yaml (held-out)
 experiments/          one-off analyses (baseline CIs, window size, truncation)
