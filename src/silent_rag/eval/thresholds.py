@@ -22,6 +22,11 @@ the model, revision and window size, and `load` refuses a mismatch. NFCorpus onl
 results table with any other dataset is refused, so nothing here touches SciFact or FiQA.
 Clean windows depend only on (seed, trial), so any run of a config gives the same clean
 scores, whatever failures it also lists.
+
+These are the NFCorpus defaults (the monitoring guide's thresholds and the dev figures),
+not the held-out run's: raw scores like qpp_max don't carry over to another dataset, so
+the SciFact and FiQA runs calibrate on their own clean windows (#29). Don't copy
+configs/thresholds.json into final.yaml.
 """
 
 from __future__ import annotations
@@ -81,13 +86,20 @@ def calibrate(df: pd.DataFrame, seeds, false_alarm: float = FALSE_ALARM) -> dict
     }
 
 
-def alarm_rates(df: pd.DataFrame, thresholds: dict, exclude_seeds=()) -> pd.DataFrame:
+def alarm_rates(df: pd.DataFrame, thresholds: dict, exclude_seeds=(), alpha: float = 0.05,
+                min_drop: float = 0.0) -> pd.DataFrame:
     """Share of windows above each detector's threshold, per condition, on seeds outside
     `exclude_seeds`. On clean windows and negative controls these are false alarms; on a
-    harmful failure, the share of its harmful windows caught."""
+    harmful failure, the share of its harmful windows caught.
+
+    `harmful` is recomputed from p_value and ndcg_drop, as in #78 and #80, so any
+    min_drop can be used. A control window that did harm isn't counted as a false alarm,
+    as in detector_scoring.false_alarm_rate: a harmful failure keeps its harmful windows,
+    a control its harmless ones."""
     rows = df[~df.seed.isin(exclude_seeds) & df.detector.isin(thresholds)].copy()
     rows["alarm"] = rows.score > rows.detector.map(thresholds)
-    keep = ~rows.expected_harmful | rows.harmful | rows.failure.eq("clean")
+    harmful = (rows.p_value < alpha) & (rows.ndcg_drop >= min_drop)
+    keep = rows.failure.eq("clean") | (rows.expected_harmful & harmful) | (~rows.expected_harmful & ~harmful)
     return rows[keep].pivot_table(index=["failure", "severity"], columns="detector", values="alarm", aggfunc="mean")
 
 
@@ -129,6 +141,8 @@ def main() -> None:
     parser.add_argument("results", help="a results parquet from silent_rag.run")
     parser.add_argument("--seeds", required=True, help="comma-separated calibration seeds; the rest are held out")
     parser.add_argument("--false-alarm", type=float, default=FALSE_ALARM)
+    parser.add_argument("--alpha", type=float, default=0.05, help="for the harmful label in the alarm-rate table")
+    parser.add_argument("--min-drop", type=float, default=0.0, help="for the harmful label in the alarm-rate table")
     parser.add_argument("--out", help="write the thresholds here (e.g. configs/thresholds.json)")
     args = parser.parse_args()
 
@@ -136,7 +150,7 @@ def main() -> None:
     seeds = [int(s) for s in args.seeds.split(",")]
     calibrated = calibrate(df, seeds, args.false_alarm)
     thresholds = {name: d["threshold"] for name, d in calibrated["detectors"].items()}
-    rates = alarm_rates(df, thresholds, exclude_seeds=seeds)
+    rates = alarm_rates(df, thresholds, exclude_seeds=seeds, alpha=args.alpha, min_drop=args.min_drop)
     for name, rate in rates.loc[("clean", 0.0)].items():
         calibrated["detectors"][name]["held_out_false_alarm"] = round(float(rate), 4)
     for name, row in leave_one_seed_out(df, args.false_alarm).iterrows():

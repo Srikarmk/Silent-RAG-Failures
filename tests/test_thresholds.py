@@ -106,3 +106,25 @@ def test_leave_one_seed_out_sees_a_seed_with_an_unlucky_reference():
     shifted.loc[(shifted.seed == 9) & (shifted.detector == "det"), "score"] += 3
     rates = thresholds.leave_one_seed_out(shifted)
     assert rates.loc["det", "worst_seed"] > 0.8
+
+
+def test_a_control_window_that_did_harm_is_not_a_false_alarm():
+    df = table()
+    t = {"det": 0.0}
+    # every control window alarms (scores are +5); mark half of them as having done harm
+    bad = (df.failure == "H_control") & (df.trial % 2 == 0)
+    df.loc[bad, ["p_value", "ndcg_drop"]] = [0.01, 0.05]
+    rates = thresholds.alarm_rates(df, t)
+    counted = df[(df.failure == "H_control") & (df.detector == "det") & ~bad]
+    assert rates.loc[("H_control", 0.5), "det"] == pytest.approx((counted.score > 0).mean())
+    # with a min_drop above their drop, those windows are harmless again and count
+    assert thresholds.alarm_rates(df, t, min_drop=0.1).loc[("H_control", 0.5), "det"] == pytest.approx(
+        (df[(df.failure == "H_control") & (df.detector == "det")].score > 0).mean())
+
+
+def test_harmful_is_recomputed_with_min_drop():
+    df = table()
+    t = {n: d["threshold"] for n, d in thresholds.calibrate(df, range(7))["detectors"].items()}
+    # the failure's harmful windows drop 0.05: above min_drop 0.1 none are harmful, so none are kept
+    assert ("F_fail", 0.5) in thresholds.alarm_rates(df, t).index
+    assert ("F_fail", 0.5) not in thresholds.alarm_rates(df, t, min_drop=0.1).index
