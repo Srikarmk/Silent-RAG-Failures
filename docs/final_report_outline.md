@@ -53,9 +53,14 @@ Status: ✅ `min_drop` 0.02 agreed on #52; setting it in the configs is 🟡 #88
 | F2 | stale documents (HoH half) | 🔴 #11, Shane |
 | F3 | chunked index partly falling back to one vector, MLDR only | 🟡 #82 |
 | F4 | query shift outside the corpus | 🔴 #13, waiting on the reference-standard question |
-| F5 | config mismatches | 🔴 #14; owner to confirm (assigned to Jenna, the issue says Shane) |
+| F5 | config mismatches | 🔴 #14, Shane |
 
-What each costs in nDCG (dev) goes here as design evidence.
+**Severity validation (dev, #16).** Damage has to grow with severity for an injector to count as validated. This is NFCorpus dev evidence about the injectors, so it belongs here in Methods, not in the held-out Results. Full dev run, 10 seeds (#79):
+
+- **F1, all four partners:** the nDCG@10 drop increases with severity up to 0.9. One step is inconclusive, MiniLM-L6 from 0.7 to 0.9 (mean increase 0.0018; the t interval includes 0, the bootstrap interval does not), so we report it as such rather than claim full monotonicity (#93). No step shows decreasing damage.
+- **F1 at 1.0:** every partner does less damage at full replacement than at 0.9 (#71). Report it as a limitation of the injector, with the hypothesis that a fully replaced index is internally consistent.
+- **F2 distractors:** the drop increases (0.004 / 0.012 / 0.016 at 0.1 / 0.5 / 0.9) but stays under `min_drop`, so few windows are harmful.
+- **F3 (MLDR):** increases from 0.04 to 0.32 over 0.1–0.9 (3 seeds, #82); not yet part of the #16 check.
 
 ### 3.4 Negative controls
 - mixed truncation 256→512
