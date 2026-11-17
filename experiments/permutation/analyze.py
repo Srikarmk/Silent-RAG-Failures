@@ -17,6 +17,10 @@ Windows of distinct queries (clean, H_mixed_truncation, H_full_swap, F1) are the
 evidence. H_query_topic_shift repeats queries, which breaks the permutation test's
 exchangeability assumption, so it is always reported in its own tables.
 
+Ground truth: a window is harmful when its bootstrap p-value for the nDCG@10 drop is below
+HARM_ALPHA = 0.05 and the drop is at least MIN_DROP = 0.02. The run stores `harmful` at
+min_drop 0, so it is re-thresholded here from `p_value` and `ndcg_drop` before any table.
+
 Writes CSVs and summary.txt next to the results file.
 """
 
@@ -33,7 +37,9 @@ from silent_rag.detect.features import FEATURES
 from silent_rag.eval.permutation import compare_threshold_rules
 
 ROOT = Path(__file__).resolve().parents[2]
-ALPHA = 0.05
+ALPHA = 0.05  # detector alarm level
+HARM_ALPHA = 0.05  # ground-truth significance level, independent of ALPHA
+MIN_DROP = 0.02  # smallest nDCG@10 drop that counts as harm
 SPLITS = {"A": [0, 1, 2], "B": [3, 4, 5]}
 REPEATED = {"H_query_topic_shift"}  # controls whose windows repeat queries
 PERM_BASES = [f"{p}_{f}" for p in ("ks", "psi") for f in FEATURES] + ["qpp_max", "qpp_gap", "qpp_nqc"]
@@ -132,6 +138,8 @@ def main() -> None:
     df = pd.read_parquet(results)
     if set(df.dataset) != {"nfcorpus"}:
         sys.exit(f"dev analysis is NFCorpus only, got {sorted(set(df.dataset))}")
+    # every table below, not only compare_threshold_rules, uses the same harm labels
+    df["harmful"] = (df.p_value < HARM_ALPHA) & (df.ndcg_drop >= MIN_DROP)
 
     pd.set_option("display.width", 250, "display.max_columns", 40, "display.max_rows", 1000)
     lines = []
@@ -143,7 +151,8 @@ def main() -> None:
         lines.append(text)
 
     emit("run", f"run_id {df.run_id.iloc[0]}, {df.groupby(WINDOW).ngroups} windows, "
-                f"{df.detector.nunique()} detectors, seeds {sorted(df.seed.unique())}")
+                f"{df.detector.nunique()} detectors, seeds {sorted(df.seed.unique())}; "
+                f"alarm alpha {ALPHA}, harmful = p_value < {HARM_ALPHA} and ndcg_drop >= {MIN_DROP}")
     checks = check_permutation_rows(df)
     emit("all 11 permutation detectors", checks)
     checks.to_csv(out_dir / "permutation_detectors.csv", index=False)
@@ -164,7 +173,8 @@ def main() -> None:
     cols = ["detector", "kind", "failure", "severity", "n_windows", "n_harmful_excluded", "clean_threshold", "rate_clean_rule",
             "rate_permutation", "seed_range_clean_rule", "seed_range_permutation"]
     for split, calibration in SPLITS.items():
-        rules = compare_threshold_rules(df, calibration_seeds=calibration, alpha=ALPHA)
+        rules = compare_threshold_rules(df, calibration_seeds=calibration, alpha=ALPHA,
+                                        harm_alpha=HARM_ALPHA, min_drop=MIN_DROP)
         rules.to_csv(out_dir / f"rules_split{split}.csv", index=False)
         seeds = per_seed(df, calibration)
         seeds.to_csv(out_dir / f"per_seed_split{split}.csv", index=False)

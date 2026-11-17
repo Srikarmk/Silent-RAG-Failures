@@ -299,6 +299,32 @@ def test_control_windows_marked_harmful_are_not_false_alarms():
     assert swap.rate_clean_rule == pytest.approx(1 / 8) and swap.rate_permutation == pytest.approx(1 / 8)
 
 
+def test_alarm_alpha_does_not_change_harmful_labels():
+    """alpha sets the detectors' alarms only; which windows are harmful is set by harm_alpha
+    and min_drop. Before they were split, alpha = 0.005 made the F1 windows (bootstrap p 0.01)
+    harmless and alpha = 0.5 made the rest (p 0.4) harmful."""
+    table = hand_table()
+    # one H_swap@0.5 window that did measurable harm at bootstrap p 0.03
+    rows = (table.failure == "H_swap") & (table.severity == 0.5) & (table.seed == 1) & (table.trial == 0)
+    table.loc[rows, ["p_value", "ndcg_drop"]] = [0.03, 0.03]
+
+    def labels(**kw):
+        out = compare_threshold_rules(table, [0], **kw)
+        return out[["kind", "failure", "severity", "n_windows", "n_harmful_excluded"]]
+
+    reference = labels()
+    # rows: clean, H_swap@0.5, H_swap@1.0, F1@0.5
+    assert list(reference.n_windows) == [8, 7, 8, 4] and list(reference.n_harmful_excluded) == [0, 1, 0, 0]
+    for alpha in (0.005, 0.02, 0.5):
+        pd.testing.assert_frame_equal(labels(alpha=alpha), reference)
+        pd.testing.assert_frame_equal(labels(alpha=alpha, min_drop=0.02), labels(min_drop=0.02))
+    # harm_alpha is the threshold that moves them: at 0.005 nothing is harmful
+    strict = labels(harm_alpha=0.005)
+    assert "failure" not in set(strict.kind) and (strict.n_harmful_excluded == 0).all()
+    with pytest.raises(ValueError, match="harm_alpha"):
+        compare_threshold_rules(table, [0], harm_alpha=0.0)
+
+
 def test_compare_threshold_rules_on_a_runner_table(monkeypatch):
     df = toy_run(monkeypatch, ["ks_top1", {"ks_top1_perm": {"permutations": 49}}], seeds=(0, 1, 2))
     out = compare_threshold_rules(df, calibration_seeds=[0])

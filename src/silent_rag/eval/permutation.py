@@ -36,16 +36,23 @@ SUFFIX = "_perm"
 
 
 def compare_threshold_rules(df: pd.DataFrame, calibration_seeds, *, detectors=None,
-                            alpha: float = 0.05, min_drop: float = 0.0) -> pd.DataFrame:
+                            alpha: float = 0.05, harm_alpha: float = 0.05,
+                            min_drop: float = 0.0) -> pd.DataFrame:
     """Alarm rates of both rules per detector, on clean windows, each control at each
     severity, and each failure's harmful windows.
 
     detectors: base names (e.g. "ks_top1"); default is every detector in `df` that has
-    a `_perm` partner. min_drop re-thresholds `harmful` from the stored `p_value` and
-    `ndcg_drop`, so it need not be the value the run was made with.
+    a `_perm` partner.
+
+    alpha is the detectors' alarm level: it sets the clean-window quantile and the
+    permutation cut-off. harm_alpha and min_drop define the ground truth: a window is
+    harmful when its bootstrap `p_value` < harm_alpha and `ndcg_drop` >= min_drop. They
+    re-threshold `harmful` from the stored columns, so they need not be the values the
+    run was made with, and changing alpha never changes which windows are harmful.
     """
-    if not np.isfinite(alpha) or not 0 < alpha < 1:
-        raise ValueError("alpha must be in (0, 1)")
+    for name, value in (("alpha", alpha), ("harm_alpha", harm_alpha)):
+        if not np.isfinite(value) or not 0 < value < 1:
+            raise ValueError(f"{name} must be in (0, 1)")
     if df["run_id"].nunique() != 1 or df["dataset"].nunique() != 1:
         raise ValueError("compare one run on one dataset at a time")
     calibration = set(calibration_seeds)
@@ -82,7 +89,7 @@ def compare_threshold_rules(df: pd.DataFrame, calibration_seeds, *, detectors=No
         test = wide[~wide["seed"].isin(calibration)].copy()
         test["alarm_clean_rule"] = test["score"] > threshold
         test["alarm_permutation"] = test["score_perm"] > 1 - alpha
-        test["harmful"] = (test["p_value"] < alpha) & (test["ndcg_drop"] >= min_drop)
+        test["harmful"] = (test["p_value"] < harm_alpha) & (test["ndcg_drop"] >= min_drop)
         is_clean = test["failure"] == "clean"
         test["kind"] = np.where(is_clean, "clean", np.where(test["expected_harmful"], "failure", "control"))
         # a failure's windows that did no measurable harm are neither false alarms nor misses

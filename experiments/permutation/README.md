@@ -14,6 +14,17 @@ on the same windows. The twin scores 1 − p, where p is the window's permutatio
 | percentile | plain score > 95th percentile of clean scores on the calibration seeds | yes |
 | clean max | plain score ≥ highest clean score on the calibration seeds (the site's rule) | yes |
 
+The permutation and percentile rules are computed by `compare_threshold_rules`
+(`silent_rag.eval.permutation`). The clean-max rule is not part of that function: it is
+implemented in `analyze.py` (`clean_max_rule`) and scored on the same evaluation windows.
+
+**Ground truth.** A window is harmful when its bootstrap p-value for the nDCG@10 drop is
+below 0.05 and the drop is at least 0.02 (`min_drop = 0.02`). No detector sees this label.
+The significance level of the ground truth (`harm_alpha`) is separate from the detectors'
+alarm level (`alpha`): changing the alarm level never changes which windows are harmful.
+The run stores `harmful` at `min_drop = 0`, so `analyze.py` re-thresholds it from the stored
+`p_value` and `ndcg_drop` for every table. Nothing is rerun.
+
 Runner seeds 0–5. **Split A** calibrates on seeds 0–2 and evaluates on 3–5, **split B** the
 reverse. All rates are on evaluation seeds only, 60 windows per condition (3 seeds × 20 trials).
 
@@ -67,12 +78,16 @@ These are the clean windows, mixed truncation, the full swaps and F1.
 
 **Harmless controls that change the model fire both rules.**
 - `H_full_swap_bge` alarmed on 100% of windows for every detector except `qpp_max` (0%).
-- `H_full_swap_minilm` alarmed on up to 45% (KS/PSI) and up to 95% (QPP) of windows.
-- Mixed truncation stayed near the clean rate: permutation ≤ 14%.
+- `H_full_swap_minilm` alarmed on up to 45% (KS/PSI) and up to 85% (QPP) of windows under
+  the permutation rule, and on up to 82% and 100% under the percentile rule (split B).
+- Mixed truncation stayed near the clean rate: permutation ≤ 13.3%.
 - A permutation p-value says the scores changed, not that retrieval got worse. Neither rule
   can tell a harmless model change from a harmful one.
 
-**F1 detection power, measured on harmful windows.** Every F1 window was harmful.
+**F1 detection power, measured on harmful windows.** 479 of the 480 F1 windows were harmful.
+The exception is one MiniLM window at severity 0.5 (seed 5, nDCG@10 drop 0.019, below
+`min_drop`). Seed 5 is an evaluation seed in split A, so that split's MiniLM 0.5 rates are over
+59 windows.
 
 | | at severity 0.9 | at severity 0.5 |
 |---|---|---|
@@ -80,7 +95,7 @@ These are the clean windows, mixed truncation, the full swaps and F1.
 | `*_gap`, `*_std10`, `qpp_nqc` | weak: usually near their clean false-alarm rate | see below |
 
 At severity 0.5 the percentile rule usually detected more:
-- split A: `ks_top1` 40%/37% (BGE/MiniLM) against 25%/28% for the permutation rule
+- split A: `ks_top1` 40%/37% (BGE/MiniLM) against 25%/29% for the permutation rule
 - split B: `ks_top1` 77%/73% against 62%/52%
 - Part of that gap comes with a higher clean false-alarm rate (split A `ks_top1`: 11.7%
   against 1.7%). But it persists where both rules had 0% clean false alarms (split B
@@ -93,13 +108,14 @@ At severity 0.5 the percentile rule usually detected more:
 **The ground truth confirms the controls are harmless.**
 - No full-swap or topic-shift window was harmful, and the full swaps improved nDCG@10
   (mean drop −0.051 for BGE, −0.025 for MiniLM).
-- Mixed truncation was harmful in 2.5–6.7% of windows, about the chance rate at α = 0.05,
-  with a mean nDCG change of 0 or slightly better.
-- Those windows are not false alarms. All three rules leave them out of the false-alarm
-  denominator, as `detector_scoring.false_alarm_rate` does, and `compare_threshold_rules`
-  reports them in `n_harmful_excluded`: per detector, 11 of the 180 mixed-truncation
-  evaluation windows in split A (5/3/3 at severities 0.1/0.5/0.9) and 4 in split B (3/1/0).
-  No clean, full-swap or topic-shift window was harmful, so nothing else is excluded.
+- No mixed-truncation window was harmful either. Its mean nDCG@10 change was 0 or slightly
+  better (mean drop −0.000/−0.002/−0.004 at severities 0.1/0.5/0.9).
+- With `min_drop = 0` (bootstrap significance alone), 2.5–6.7% of mixed-truncation windows
+  were labeled harmful, about the chance rate at 0.05. Every one of those drops was below
+  0.014, so `min_drop = 0.02` labels them harmless.
+- So no clean or control window is harmful, and `n_harmful_excluded` is 0 everywhere. A
+  control window the ground truth marks harmful would be left out of the false-alarm
+  denominator, as `detector_scoring.false_alarm_rate` does, by all three rules.
 
 **Cost (#27).** The runner records `cost_s` for the `_perm` detectors like any other detector.
 
@@ -149,5 +165,12 @@ with repeated queries can't be read as false-alarm rates under the test's null. 
   223-query pool), so the per-seed rates are noisy.
 - **Resolution.** The p-value has a resolution of 0.001, and every window uses the same
   reshuffles.
+- **KS p-values can be conservative.** The KS statistic takes only a few discrete values, so
+  many reshuffles reproduce the observed statistic exactly. Those ties count toward the tail:
+  p = (1 + reshuffles ≥ observed) / (permutations + 1). That makes p ≥ the probability of a
+  strictly larger statistic, so the KS permutation rule can alarm less often than its nominal
+  α and lose some power. This is consistent with the low KS clean rates above (`ks_top1` and
+  `ks_mean10` p ≤ 0.05 in 0.8% of clean windows). A mid-p or randomized tie-break would
+  reduce this; neither is implemented here.
 - **No multiple-testing correction** across detectors.
 - **One dataset and one window size.** F1 at only two severities.
