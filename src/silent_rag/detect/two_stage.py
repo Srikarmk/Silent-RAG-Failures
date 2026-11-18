@@ -4,7 +4,9 @@
 On every window it scores `stage1` (combined_scores by default, #75). If that score is
 above `stage1_threshold` the window is flagged and the judge scores it; otherwise the
 judge never runs. The score is the judge's share of irrelevant pairs on flagged windows
-and 0 on the rest, so one threshold on it (the judge's own) gives the pair's alarms, and
+and `UNJUDGED` (-1) on the rest. A judged window can score 0, so -1 keeps "not judged"
+apart from "judged, nothing irrelevant". One threshold on the score (the judge's own,
+which is >= 0) gives the pair's alarms, and
 `cost_s` is what a team running it would pay: stage 1 on every window, plus the judge
 (uncached) on the flagged ones.
 
@@ -24,6 +26,9 @@ from silent_rag import judge
 from silent_rag.detect.base import REGISTRY, Detector, register
 from silent_rag.detect.llm_judge import LLMJudge
 from silent_rag.types import Observation
+
+# score of a window stage 1 didn't flag; any judged window scores in [0, 1]
+UNJUDGED = -1.0
 
 
 @register
@@ -68,7 +73,7 @@ class TwoStage(Detector):
         self.flagged = first > self.stage1_threshold
         if not self.flagged:
             self.last_cost_s, self.last_cost_usd = stage1_s, 0.0
-            return 0.0
+            return UNJUDGED
         share = self.judge.score(window)
         self.last_cost_s = stage1_s + self.judge.last_cost_s
         self.last_cost_usd = self.judge.last_cost_usd
