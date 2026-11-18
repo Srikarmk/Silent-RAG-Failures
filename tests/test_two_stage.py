@@ -66,6 +66,49 @@ def test_evaluation_needs_test_seeds_and_known_detectors():
         two_stage.scores(results(), ["cheap", "llm_judge"])
 
 
+def test_stage1_matched_runs_at_the_pairs_clean_false_alarm_rate():
+    wide = two_stage.scores(results(), ["cheap", "check"])
+    cal = [0, 1, 2]
+    t1 = two_stage.threshold(wide, "cheap", cal)
+    t1m = two_stage.matched_threshold(wide, "cheap", "check", cal)
+    assert t1m >= t1  # the AND gate is stricter, so stage 1 has to be too
+    clean = wide[wide.failure.eq("clean") & wide.seed.isin(cal)]
+    pair_rate = ((clean.cheap > t1) & (clean.check > two_stage.threshold(wide, "check", cal))).mean()
+    assert (clean.cheap > t1m).mean() <= pair_rate + 1 / len(clean)
+    table = two_stage.evaluate(wide, "cheap", "check", cal)
+    # here stage 2 really adds information: on the control a stricter stage 1 still fires, the pair doesn't
+    h = table.loc[("H_x", 1.0)]
+    assert h.stage1_matched > h.pair
+
+
+def test_control_windows_that_did_harm_are_not_false_alarms():
+    df = results()
+    hit = (df.failure == "H_x") & (df.trial < 10)
+    df.loc[hit, "p_value"], df.loc[hit, "ndcg_drop"] = 0.001, 0.05
+    table = two_stage.evaluate(two_stage.scores(df, ["cheap", "check"]), "cheap", "check", [0, 1, 2])
+    assert table.loc[("H_x", 1.0)].windows == 3 * 30
+
+
+def test_by_seed_splits_rows_per_test_seed():
+    wide = two_stage.scores(results(), ["cheap", "check"])
+    table = two_stage.evaluate(wide, "cheap", "check", [0, 1, 2], by_seed=True)
+    assert sorted(table.index.get_level_values("seed").unique()) == [3, 4, 5]
+    assert table.loc[(3, "F_x", 0.5)].windows == 40
+
+
+def test_summary_pools_windows():
+    table = pd.DataFrame({"expected_harmful": [False, False], "windows": [10, 30], "stage1": [0.0, 1.0],
+                          "stage2": [0.0, 0.0], "pair": [0.0, 0.0], "stage1_matched": [0.0, 0.0],
+                          "cost_stage1_s": [1.0, 1.0], "cost_stage2_s": [1.0, 1.0], "cost_pair_s": [1.0, 1.0]},
+                         index=pd.MultiIndex.from_tuples([("clean", 0.0), ("H_x", 1.0)], names=["failure", "severity"]))
+    assert two_stage.summary(table).stage1_false_alarm == 0.75
+
+
+def test_scores_refuses_duplicate_windows():
+    df = results()
+    with pytest.raises(ValueError, match="same window twice"):
+        two_stage.scores(pd.concat([df, df.head(1)]), ["cheap", "check"])
+
 def gated_rows():
     """two_stage scores as the gated detector writes them: -1 when stage 1 didn't flag."""
     rows = []
