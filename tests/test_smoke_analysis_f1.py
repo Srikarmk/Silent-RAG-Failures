@@ -6,6 +6,7 @@ Skips when a model file is not in the local Hugging Face cache; any other proble
 HF_HUB_OFFLINE=1 keeps it from contacting the Hub; it must be set before the libraries are imported.
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -103,3 +104,31 @@ def test_smoke_run_and_analysis_meet_the_pass_criteria(tmp_path, monkeypatch):
         cases.append({"severity": row.severity, "overlap": overlap})
     print("re_embed F1 windows by severity, sample overlaps the replaced documents:")
     print(pd.DataFrame(cases).value_counts(["severity", "overlap"]).sort_index().to_string())
+
+
+@pytest.mark.slow
+def test_smoke_analysis_twice_gives_identical_tables_and_manifests(tmp_path, monkeypatch):
+    """Determinism (spec 5.11, step 18d): run() once on the smoke config, then the entry point twice
+    on its results into out_a/ and out_b/. Every table must be byte-identical, and the manifests equal
+    once the per-table seconds (wall-clock timing) are removed."""
+    monkeypatch.setattr(pipeline, "CACHE_DIR", REAL_CACHE)
+    run_config = abr.load_yaml(SMOKE)
+    skip_unless_cached(run_config)
+
+    results = tmp_path / "smoke.parquet"
+    runner.run(run_config).to_parquet(results, index=False)
+    outs = [tmp_path / "out_a", tmp_path / "out_b"]
+    for out in outs:
+        start = time.perf_counter()
+        abr.main(["--config", str(SMOKE), "--analysis", str(SMOKE_ANALYSIS), "--results", str(results), "--out", str(out)])
+        print(f"\nanalysis into {out.name}: {time.perf_counter() - start:.1f} s")
+
+    tables_a, tables_b = (sorted(p.name for p in out.glob("*.parquet")) for out in outs)
+    assert tables_a == tables_b and len(tables_a) == 17  # 16 tables, one of them as two files
+    differ = [name for name in tables_a if (outs[0] / name).read_bytes() != (outs[1] / name).read_bytes()]
+    assert not differ, f"tables not byte-identical: {differ}"
+    manifests = [json.loads((out / "manifest.json").read_text()) for out in outs]
+    for manifest in manifests:
+        for entry in manifest["tables"].values():
+            entry.pop("seconds")  # the only field expected to differ: wall-clock time per table
+    assert manifests[0] == manifests[1]
