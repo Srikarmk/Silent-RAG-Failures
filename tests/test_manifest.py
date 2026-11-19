@@ -21,11 +21,11 @@ def outputs_and_inputs(tmp_path):
     return out, {"run_config": config}
 
 
-def manifest(tmp_path, repo_dir=None):
+def manifest(tmp_path, repo_dir=None, git_at_start=None):
     out, inputs = outputs_and_inputs(tmp_path)
     return out, write_manifest(out, run_id="abc", input_files=inputs, analysis_config=ANALYSIS,
                                status={"t1": "written", "t2": "skipped: no settings"}, seconds={"t1": 1.5},
-                               repo_dir=repo_dir or tmp_path)
+                               repo_dir=repo_dir or tmp_path, git_at_start=git_at_start)
 
 
 def test_hashes_match_hashlib_and_the_manifest_does_not_hash_itself(tmp_path):
@@ -56,6 +56,57 @@ def test_dirty_working_tree_is_reported(tmp_path):
     assert len(clean["commit"]) == 40 and clean["uncommitted_changes"] is False and clean["note"] is None
     (repo / "f.txt").write_text("two")
     assert git_state(repo)["uncommitted_changes"] is True
+
+
+def committed_repo(tmp_path):
+    """A git repository with f.txt and g.txt committed; returns (repo, git)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=test", "-c", "user.email=test@example.invalid", *args],
+                       check=True, capture_output=True)
+    git("init", "-q")
+    (repo / "f.txt").write_text("one")
+    (repo / "g.txt").write_text("g")
+    git("add", "f.txt", "g.txt")
+    git("commit", "-q", "-m", "first")
+    return repo, git
+
+
+def test_uncommitted_paths_list_each_file_sorted(tmp_path):
+    repo, git = committed_repo(tmp_path)
+    assert git_state(repo)["uncommitted_paths"] == []
+    (repo / "f.txt").write_text("two")  # modified
+    (repo / "sub").mkdir()
+    (repo / "sub" / "new file.txt").write_text("x")  # untracked, in a folder, with a space
+    git("mv", "g.txt", "h.txt")  # a rename lists its new path only
+    state = git_state(repo)
+    assert state["uncommitted_paths"] == ["f.txt", "h.txt", "sub/new file.txt"] and state["uncommitted_changes"] is True
+    assert git_state(tmp_path / "repo" / "sub")["uncommitted_paths"] == state["uncommitted_paths"]  # repo-relative
+    assert git_state(tmp_path)["uncommitted_paths"] is None  # not a git checkout
+
+
+def test_manifest_records_the_start_state_and_what_changed_by_the_end(tmp_path):
+    repo, git = committed_repo(tmp_path)
+    start = git_state(repo)
+    (repo / "f.txt").write_text("two")
+    git("commit", "-q", "-am", "second")  # a commit during the run
+    (repo / "late.txt").write_text("appeared during the run")
+    _, got = manifest(tmp_path, repo_dir=repo, git_at_start=start)
+    assert got["manifest_version"] == 2
+    g = got["git"]
+    assert g["commit"] == start["commit"] and g["end_commit"] != start["commit"] and g["commit_changed_during_run"] is True
+    assert (g["uncommitted_changes"], g["uncommitted_paths"], g["uncommitted_paths_at_end"]) == (False, [], ["late.txt"])
+
+
+def test_manifest_without_a_start_state_uses_the_state_at_writing(tmp_path):
+    repo, _ = committed_repo(tmp_path)
+    g = manifest(tmp_path, repo_dir=repo)[1]["git"]
+    assert g["commit"] == g["end_commit"] and g["commit_changed_during_run"] is False
+    assert g["uncommitted_paths"] == g["uncommitted_paths_at_end"] == []
+    outside = manifest(tmp_path)[1]  # repo_dir is not a git checkout
+    assert outside["manifest_version"] == 2 and outside["git"]["commit_changed_during_run"] is None
+    assert outside["git"]["end_commit"] is None and outside["git"]["note"].startswith("not a git checkout")
 
 
 def test_keys_sorted_status_timings_and_settings_recorded(tmp_path):
