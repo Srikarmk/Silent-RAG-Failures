@@ -8,6 +8,7 @@ from matplotlib.figure import Figure  # noqa: E402
 
 from silent_rag.plots.figures_statistics import (  # noqa: E402
     RANGE_BAND,
+    auroc_vs_severity,
     seconds_per_statistic,
     share_of_significant_windows_vs_severity,
     statistic_vs_severity_all_test_questions,
@@ -206,3 +207,77 @@ def test_seconds_unknown_palette_raises_the_color_for_message():
         seconds_per_statistic(SECONDS, style=s)
     assert str(got.value) == str(expected.value) and str(got.value).startswith("unknown palette 'viridis'")
     assert seconds_per_statistic(SECONDS, colors={"palette": ["#123456"]}).axes[0].lines[0].get_color() == "#123456"
+
+
+# table 4 (auroc_statistic_harmful_vs_negative_windows_by_severity), the columns the figure reads
+def arow(failure, severity, auroc, low, high, n_seeds=10, note="", min_drop=0.0, statistic="s1", negatives="unmodified"):
+    return dict(failure=failure, severity=severity, auroc=auroc, ci_low=low, ci_high=high, n_seeds=n_seeds,
+                note=note, min_mean_ndcg10_drop=min_drop, statistic=statistic, negatives=negatives)
+
+
+NAN = float("nan")
+AUROC = pd.DataFrame([
+    arow("m_a", 0.5, NAN, NAN, NAN, note="undefined: no positive windows"), arow("m_a", 1.0, 0.8, 0.7, 0.9),
+    arow("m_b", 0.5, 0.6, NAN, NAN, n_seeds=8, note="no CI: one seed"), arow("m_b", 1.0, 0.95, 0.9, 1.0, n_seeds=8),
+    arow("m_a", 0.5, 0.55, 0.5, 0.6, min_drop=0.02), arow("m_a", 1.0, 0.7, 0.6, 0.8, min_drop=0.02),
+    arow("m_a", 1.0, 0.3, 0.2, 0.4, statistic="s2"), arow("m_a", 1.0, 0.99, 0.98, 1.0, negatives="with_controls")])
+SEED_BAND = "shaded: 95% CI over {} random seeds (whole seeds resampled)"
+
+
+def auroc_fig(table=AUROC, statistic="s1", min_drop=0.0, **kwargs):
+    return auroc_vs_severity(table, statistic=statistic, min_drop=min_drop, **kwargs)
+
+
+def test_auroc_returns_a_figure_without_pyplot_or_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    plt.close("all")
+    fig = auroc_fig()
+    assert isinstance(fig, Figure) and len(fig.axes) == 1
+    assert plt.get_fignums() == [] and list(tmp_path.iterdir()) == []
+
+
+def test_auroc_lines_at_the_min_drop_with_the_seed_band_and_the_half_line():
+    ax = auroc_fig(min_drop=0.02 + 1e-12).axes[0]
+    assert series(ax) == {"m_a": ([0.5, 1.0], [0.55, 0.7])} and reference_ys(ax) == [0.5]
+    assert ax.get_legend_handles_labels()[1] == ["m_a", "AUROC 0.5", SEED_BAND.format(10)]
+    assert ax.get_ylim() == (-0.02, 1.02) and ax.get_xlim() == (0, pytest.approx(1.02))
+    assert "minimum mean drop 0.02" in ax.get_title() and "unmodified windows" in ax.get_ylabel()
+    assert not ax.texts  # nothing missing, no note
+    assert auroc_fig(ylim=[0.4, 1]).axes[0].get_ylim() == (0.4, 1)  # axes.ylim overrides
+
+
+def test_auroc_nan_points_are_gaps_and_noted_and_n_seeds_range():
+    ax = auroc_fig().axes[0]
+    assert series(ax)["m_a"][1] == pytest.approx([NAN, 0.8], nan_ok=True)  # gap, not bridged
+    (note,) = ax.texts
+    assert note.get_text() == ("1 point not shown (value undefined): undefined: no positive windows (1)\n"
+                               "1 interval not shown: no CI: one seed (1)")
+    assert SEED_BAND.format("8–10") in ax.get_legend_handles_labels()[1]  # rows with an interval only
+    only_a = auroc_fig(include={"labels": ["m_a"]}).axes[0]
+    assert SEED_BAND.format(10) in only_a.get_legend_handles_labels()[1]
+    assert only_a.texts[0].get_text().count("not shown") == 1
+
+
+def test_auroc_yaml_options_display_names_models_and_ax():
+    s = PlotStyle({"figures": {"auroc_vs_severity": {"statistic": "s1", "min_drop": 0.0, "negatives": "with_controls"}},
+                   "display_names": {"negatives": {"with_controls": "unmodified or control"}}})
+    ax = auroc_vs_severity(AUROC, style=s).axes[0]
+    assert series(ax) == {"m_a": ([1.0], [0.99])} and "vs unmodified or control windows" in ax.get_ylabel()
+    lines = [line for line in auroc_fig(models=MODELS).axes[0].lines if line.get_zorder() != 1]
+    assert [line.get_label() for line in lines] == ["m_b", "m_a"]
+    fig, axes = new_figure(PlotStyle.default().resolve("grid"), ncols=2)
+    assert auroc_fig(ax=axes[1], legend={"show": False}) is fig and axes[1].lines and not axes[0].lines
+
+
+def test_auroc_errors():
+    with pytest.raises(ValueError, match=r"^auroc_vs_severity: no statistic given; choose one of \['s1', 's2'\]"):
+        auroc_fig(statistic=None)
+    with pytest.raises(ValueError, match=r"negatives 'controls' is not in the table; choose one of "
+                                         r"\['unmodified', 'with_controls'\]"):
+        auroc_fig(negatives="controls")
+    with pytest.raises(ValueError, match=r"no min_drop given; choose one of \[0\.0, 0\.02\]"):
+        auroc_fig(min_drop=None)
+    with pytest.raises(ValueError, match=r"min_drop 0\.06 is not in the table"):
+        auroc_fig(min_drop=0.06)
+    with pytest.raises(ValueError, match=r"^auroc_vs_severity: no rows to plot after include"):
+        auroc_fig(include={"labels": ["m_z"]})

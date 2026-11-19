@@ -1,6 +1,6 @@
 """Figures about the monitoring statistics: their values on all test questions by severity
-(table 10), the share of windows with a significant drop (table 2) and the seconds per
-evaluation (table 3). Spec section 5.13. Each function reads tables only, draws one axes and
+(table 10), the share of windows with a significant drop (table 2), the seconds per
+evaluation (table 3) and the AUROC by severity (table 4). Spec section 5.13. Each function reads tables only, draws one axes and
 returns its Figure; options default to None here, their defaults are in FIGURE_DEFAULTS.
 """
 from __future__ import annotations
@@ -15,6 +15,7 @@ from silent_rag.plots._common import (
     finish_axes,
     label_order,
     line_with_band,
+    nan_note,
     reference_line,
     require_rows,
 )
@@ -23,6 +24,7 @@ from silent_rag.plots.style import FIGURE_DEFAULTS, PALETTES, PlotStyle, color_f
 FIGURE_DEFAULTS["statistic_vs_severity_all_test_questions"] = {"statistic": None, "annotate_ends": True}
 FIGURE_DEFAULTS["share_of_significant_windows_vs_severity"] = {"min_drop": None, "annotate_ends": True}
 FIGURE_DEFAULTS["seconds_per_statistic"] = {"axes": {"log_x": True}}
+FIGURE_DEFAULTS["auroc_vs_severity"] = {"statistic": None, "min_drop": None, "negatives": "unmodified"}
 RANGE_BAND = "shaded: range over seeds (not a CI)"
 SEVERITY_TEXT = "Severity (fraction of document vectors replaced)"
 
@@ -157,4 +159,75 @@ def seconds_per_statistic(seconds, *, style=None, ax=None, **shared):
         ax.margins(x=0.25)  # room for the n labels right of the dots
         finish_axes(ax, settings, title="Median seconds per evaluation of each statistic",
                     xlabel="Median seconds per evaluation", ylabel="Monitoring statistic")
+    return fig
+
+
+def _seed_ci_text(rows):
+    """"95% CI over N random seeds (whole seeds resampled)", N from n_seeds of the rows whose
+    interval is present ("8–10" when they differ); None when no row has an interval."""
+    drawn = rows.loc[rows[["ci_low", "ci_high"]].notna().all(axis=1), "n_seeds"]
+    if drawn.empty:
+        return None
+    low, high = int(drawn.min()), int(drawn.max())
+    return f"95% CI over {low if low == high else f'{low}–{high}'} random seeds (whole seeds resampled)"
+
+
+def _auroc_rows(auroc, name, settings):
+    """The rows of an AUROC table (4 or 5) for settings' statistic and negatives definition;
+    raises naming the available values when either is missing or not in the table."""
+    for key in ("statistic", "negatives"):
+        value, available = settings[key], sorted(auroc[key].unique())
+        if value not in available:
+            given = f"no {key} given" if value is None else f"{key} {value!r} is not in the table"
+            raise ValueError(f"{name}: {given}; choose one of {available}")
+    return auroc[auroc["statistic"].eq(settings["statistic"]) & auroc["negatives"].eq(settings["negatives"])]
+
+
+def auroc_vs_severity(auroc, *, statistic=None, min_drop=None, negatives=None, models=None, style=None, ax=None,
+                      **shared):
+    """AUROC of one monitoring statistic vs severity, one line per label, at one minimum mean drop,
+    from table 4 (auroc_statistic_harmful_vs_negative_windows_by_severity): windows of the label
+    with a significant drop against the negatives definition (default "unmodified"). The band is
+    the seed-cluster 95% CI: whole seeds resampled, so it reflects variability across random
+    seeds over the same test questions, not question-level sampling uncertainty.
+
+    statistic and min_drop are required (min_drop matched with np.isclose). Undefined AUROCs and
+    missing intervals are left as gaps and counted, with their reasons, in a note in the lower
+    left. A reference line marks AUROC 0.5. The y-axis runs from 0 to 1 unless axes.ylim is set.
+    models (table 16) only sets the label order. Raises if a selector is missing or not in the
+    table, or if include leaves no rows.
+    """
+    name = "auroc_vs_severity"
+    settings = (style or PlotStyle.default()).resolve(name, statistic=statistic, min_drop=min_drop,
+                                                      negatives=negatives, **shared)
+    chosen, min_drop = _auroc_rows(auroc, name, settings), settings["min_drop"]
+    available = sorted(float(v) for v in auroc["min_mean_ndcg10_drop"].unique())
+    at_drop = (np.isclose(chosen["min_mean_ndcg10_drop"], min_drop) if min_drop is not None
+               else np.zeros(len(chosen), dtype=bool))
+    if not at_drop.any():
+        given = "no min_drop given" if min_drop is None else f"min_drop {min_drop} is not in the table"
+        raise ValueError(f"{name}: {given}; choose one of {available}")
+    one = chosen[at_drop]
+    table = filter_include(one, settings)
+    require_rows(one, table, settings, name)
+    labels = label_order(table["failure"], settings, models)
+    statistic_name = display_name("statistic", settings["statistic"], settings)
+    negatives_name = display_name("negatives", settings["negatives"], settings)
+
+    with style_context(settings):
+        fig, ax = figure_axes(settings, ax)
+        for label in labels:
+            rows = table[table["failure"].eq(label)].sort_values("severity")
+            line_with_band(ax, rows["severity"], rows["auroc"], settings, color=color_for(label, settings, labels),
+                           label=display_name("label", label, settings), low=rows["ci_low"], high=rows["ci_high"])
+        reference_line(ax, settings, label="AUROC 0.5", y=0.5)
+        ci_text = _seed_ci_text(table)
+        if ci_text is not None:
+            band_legend_entry(ax, settings, f"shaded: {ci_text}")
+        ax.set_xlim(0, float(table["severity"].max()) * 1.02)
+        ax.set_ylim(-0.02, 1.02)  # AUROC 0 and 1 stay off the frame
+        finish_axes(ax, settings, xlabel=SEVERITY_TEXT,
+                    ylabel=f"AUROC (windows with a significant drop\nvs {negatives_name} windows)",
+                    title=f"{statistic_name}:\nAUROC by severity, minimum mean drop {min_drop:g}")
+        nan_note(ax, table, "auroc", settings)
     return fig
