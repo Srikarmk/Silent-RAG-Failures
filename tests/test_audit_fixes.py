@@ -549,3 +549,31 @@ def test_config_with_a_repeated_key_is_rejected(tmp_path, monkeypatch):
 
 def test_duplicate_datasets_run_once():
     assert runner.check_datasets(["nfcorpus", "NFCorpus", "BeIR/nfcorpus"], final=False) == ["nfcorpus"]
+
+
+SPLITS = [(323, 100, 0), (323, 100, 9), (300, 100, 0), (300, 100, 2), (648, 100, 1), (150, 10, 3), (101, 100, 0)]
+# NFCorpus 323, SciFact 300 and FiQA 648 test questions at the run's window size; a small case; one question left over
+
+
+@pytest.mark.parametrize("n_questions, window_size, seed", SPLITS)
+def test_reference_and_pool_indices_split_one_permutation(n_questions, window_size, seed):
+    reference, pool = runner.reference_and_pool_indices(n_questions, window_size, seed)
+    assert len(reference) == window_size and len(pool) == n_questions - window_size
+    assert not set(reference.tolist()) & set(pool.tolist())  # disjoint
+    np.testing.assert_array_equal(np.sort(np.concatenate([reference, pool])), np.arange(n_questions))  # a permutation
+    order = np.random.default_rng(seed).permutation(n_questions)
+    np.testing.assert_array_equal(reference, order[:window_size])  # the first part of default_rng(seed)'s permutation
+    np.testing.assert_array_equal(pool, order[window_size:])
+    again_reference, again_pool = runner.reference_and_pool_indices(n_questions, window_size, seed)  # same seed, same split
+    np.testing.assert_array_equal(again_reference, reference)
+    np.testing.assert_array_equal(again_pool, pool)
+
+
+@pytest.mark.parametrize("n_questions, window_size, seed", [c for c in SPLITS if c[0] - c[1] >= c[1]])
+def test_windows_come_only_from_the_pool(n_questions, window_size, seed):  # cases whose pool holds a whole window
+    reference, pool = runner.reference_and_pool_indices(n_questions, window_size, seed)
+    for trial in range(20):  # the runs' 20 trials per seed
+        window_reference, window = runner.window_question_indices(n_questions, window_size, seed, trial)
+        np.testing.assert_array_equal(window_reference, reference)  # the same reference for every trial
+        assert len(window) == window_size == len(set(window.tolist()))  # no question twice
+        assert set(window.tolist()) <= set(pool.tolist())  # never a reference question
