@@ -117,8 +117,14 @@ def per_question(drops):
 BOOT = {"question_bootstrap": {"resamples": 2000, "seed": 0}}
 
 
+def label_rows(table):
+    """The failure x severity rows of table 9, without its clean row."""
+    return table[table["failure"].ne("clean")].reset_index(drop=True)
+
+
 def test_mean_drop_is_a_hand_calculation_with_counts():
-    got = mean_ndcg10_drop_all_test_questions_by_severity(per_question({"a": [0.1, 0.3], "b": [0.0, 0.2]}), BOOT).iloc[0]
+    got = label_rows(mean_ndcg10_drop_all_test_questions_by_severity(
+        per_question({"a": [0.1, 0.3], "b": [0.0, 0.2]}), BOOT)).iloc[0]
     assert got["mean_ndcg10_drop"] == pytest.approx((0.2 + 0.1) / 2)  # question means 0.2 and 0.1
     assert (got["n_questions"], got["n_seeds"], got["injector"]) == (2, 2, "F1_partial_upgrade")
 
@@ -126,7 +132,7 @@ def test_mean_drop_is_a_hand_calculation_with_counts():
 def test_seeds_are_averaged_before_the_question_bootstrap():
     # questions differ (0.0 to 0.3); seeds of a question barely do. Five seeds per question.
     drops = {f"q{i}": [0.1 * i + 0.001 * s for s in range(5)] for i in range(4)}
-    got = mean_ndcg10_drop_all_test_questions_by_severity(per_question(drops), BOOT).iloc[0]
+    got = label_rows(mean_ndcg10_drop_all_test_questions_by_severity(per_question(drops), BOOT)).iloc[0]
     question_means = np.array([np.mean(d) for d in drops.values()])
     assert (got["ci_low"], got["ci_high"]) == pytest.approx(bootstrap_ci(question_means, n_boot=2000, seed=0)[1:])
     pooled = bootstrap_ci(np.concatenate(list(drops.values())), n_boot=2000, seed=0)  # 20 "independent" values
@@ -140,10 +146,34 @@ def test_baseline_ndcg10_is_the_mean_over_questions_and_constant_per_run():
                           "baseline_ndcg10": b, "modified_ndcg10": b - 0.1 * sev}
                          for f in ("F1", "F2") for sev in (0.1, 0.9) for s in (0, 1) for q, b in baselines.items()])
     got = mean_ndcg10_drop_all_test_questions_by_severity(rows, BOOT)
-    assert got["baseline_ndcg10"].tolist() == pytest.approx([(0.8 + 0.2 + 0.5) / 3] * 4)
+    assert got["baseline_ndcg10"].tolist() == pytest.approx([(0.8 + 0.2 + 0.5) / 3] * 5)  # clean + four label rows
     assert list(got.columns) == ["failure", "injector", "severity", "mean_ndcg10_drop", "ci_low", "ci_high",
                                  "n_questions", "n_seeds", "baseline_ndcg10"]  # existing columns first, in order
-    assert got["mean_ndcg10_drop"].tolist() == pytest.approx([0.01, 0.09, 0.01, 0.09])
+    assert label_rows(got)["mean_ndcg10_drop"].tolist() == pytest.approx([0.01, 0.09, 0.01, 0.09])
+
+
+def test_clean_row_comes_first_with_values_written_and_label_rows_unchanged():
+    baselines = {"a": 0.8, "b": 0.2, "c": 0.5}
+    rows = pd.DataFrame([{"question_id": q, "failure": f, "injector": f, "severity": sev, "seed": s,
+                          "baseline_ndcg10": b, "modified_ndcg10": b - 0.1 * sev - 0.01 * s}
+                         for f in ("F1", "F2") for sev in (0.1, 0.9) for s in (0, 1) for q, b in baselines.items()])
+    got = mean_ndcg10_drop_all_test_questions_by_severity(rows, BOOT)
+    assert (got["failure"] == "clean").sum() == 1 and got.loc[0, "failure"] == "clean"
+    clean = got.iloc[0]
+    assert pd.isna(clean["injector"]) and clean["severity"] == 0.0
+    assert (clean["mean_ndcg10_drop"], clean["ci_low"], clean["ci_high"]) == (0.0, 0.0, 0.0)  # exact, not estimated
+    assert (clean["n_questions"], clean["n_seeds"]) == (3, 0)
+    assert clean["baseline_ndcg10"] == got.loc[1, "baseline_ndcg10"]  # the same value as the label rows, exactly
+    again = label_rows(mean_ndcg10_drop_all_test_questions_by_severity(rows, BOOT))
+    pd.testing.assert_frame_equal(got.iloc[1:].reset_index(drop=True), again)
+    assert list(again[["failure", "severity"]].itertuples(index=False, name=None)) == [
+        ("F1", 0.1), ("F1", 0.9), ("F2", 0.1), ("F2", 0.9)]  # label rows in their usual order
+
+
+def test_empty_input_gives_an_empty_table_without_a_clean_row():
+    empty = per_question({}).reindex(columns=["question_id", "failure", "injector", "severity", "seed",
+                                              "baseline_ndcg10", "modified_ndcg10"])
+    assert mean_ndcg10_drop_all_test_questions_by_severity(empty, BOOT).empty
 
 
 def test_unequal_seed_counts_are_an_error():

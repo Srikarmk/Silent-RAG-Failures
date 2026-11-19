@@ -141,6 +141,11 @@ def mean_ndcg10_drop_all_test_questions_by_severity(per_question_table: pd.DataF
     seeds, as in that table, not the runner's per-window seeds. baseline_ndcg10 is the mean baseline
     nDCG@10 over the questions (taken once per question); it is the same in every row of a run and
     equals replacement_model_difference_table's baseline_ndcg10.
+
+    The first row is the unmodified system (failure "clean", injector null, severity 0), as in the
+    other whole-test-set table: drop 0 and CI [0, 0] by definition (written, not bootstrapped),
+    n_questions = the distinct questions in the input, n_seeds 0, and the same baseline_ndcg10.
+    An empty input gives an empty table, with no clean row.
     """
     boot = analysis_config["question_bootstrap"]
     table = per_question_table.assign(drop=per_question_table["baseline_ndcg10"] - per_question_table["modified_ndcg10"])
@@ -155,4 +160,9 @@ def mean_ndcg10_drop_all_test_questions_by_severity(per_question_table: pd.DataF
         rows.append({"failure": failure, "injector": injector, "severity": float(severity), "mean_ndcg10_drop": mean,
                      "ci_low": low, "ci_high": high, "n_questions": len(group), "n_seeds": int(group["n_seeds"].iloc[0]),
                      "baseline_ndcg10": float(group["baseline"].mean())})
-    return pd.DataFrame(rows)
+    if table.empty:
+        return pd.DataFrame(rows)
+    baselines = per_question.groupby(level="question_id", sort=True)["baseline"].first()
+    clean = {"failure": "clean", "injector": None, "severity": 0.0, "mean_ndcg10_drop": 0.0, "ci_low": 0.0,
+             "ci_high": 0.0, "n_questions": len(baselines), "n_seeds": 0, "baseline_ndcg10": float(baselines.mean())}
+    return pd.DataFrame([clean, *rows])
