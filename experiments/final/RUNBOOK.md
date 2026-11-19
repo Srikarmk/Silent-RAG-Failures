@@ -6,13 +6,18 @@ run on held-out data.
 `configs/final.yaml` lists both datasets; the analysis takes one dataset per run, so it is run as
 two configs with identical settings:
 
-| Config | Dataset | Expected run_id |
-|---|---|---|
-| `experiments/final/final_scifact.yaml` | SciFact (5,183 docs, 300 test questions, no validation split) | `bebcd2b7cf3f` |
-| `experiments/final/final_fiqa.yaml` | FiQA (57,638 docs, 648 test, 500 validation) | `9bd99cb1bd89` |
+| Config | Dataset |
+|---|---|
+| `experiments/final/final_scifact.yaml` | SciFact (5,183 docs, 300 test questions, no validation split) |
+| `experiments/final/final_fiqa.yaml` | FiQA (57,638 docs, 648 test, 500 validation) |
 
-Before running: settle the open decisions (seeds; SciFact's reference split). If the configs change,
-re-check the run_ids with `run_id_from_run_config`.
+Settings (seeds, trials, severities) are whatever the configs hold on the day. Each parquet's run_id
+is checked against its config by the analysis; to see the expected values beforehand:
+
+    python -c "import yaml; from silent_rag import run as r
+    for n in ('scifact', 'fiqa'):
+        c = yaml.load(open(f'experiments/final/final_{n}.yaml'), Loader=r.UniqueKeyLoader)
+        print(n, r.run_id_from_run_config(c))"
 
 ## 1. Runner (one run per dataset)
 
