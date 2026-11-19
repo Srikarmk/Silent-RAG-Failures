@@ -356,17 +356,30 @@ SPEARMAN = pd.DataFrame([
     srow("m_b", 0.5, 0.3, 0.2, 0.4), srow("m_b", 1.0, 0.5, 0.4, 0.6),
     srow("m_a", NAN, 0.6, 0.5, 0.7), srow("m_b", NAN, 0.7, 0.6, 0.8, n_seeds=8),
     srow("m_a", 0.5, -0.1, -0.2, 0.0, statistic="s2")])
-POOLED_ENTRY = "◆ all severities pooled;\nerror bars: 95% CI over 8–10 random seeds\n(whole seeds resampled)"  # three lines
+POOLED_ENTRY = ("all severities pooled (hollow markers);\nerror bars: 95% CI over 8–10 random seeds\n"
+                "(whole seeds resampled)")  # three lines
 
 
 def spearman_fig(table=SPEARMAN, statistic="s1", **kwargs):
     return spearman_vs_severity(table, statistic=statistic, **kwargs)
 
 
-def marked(ax, marker):
-    """[(x, y)] of the data points drawn with this marker ("o": per-severity lines, "D": pooled)."""
-    return [(x, y) for line in ax.lines if line.get_marker() == marker and line.get_zorder() != 1
-            for x, y in zip(line.get_xdata(), line.get_ydata()) if not np.isnan(y)]
+def per_severity_lines(ax):
+    """{legend label: (marker, y values)} of the per-severity lines: labelled, not reference lines (zorder 1)."""
+    return {line.get_label(): (line.get_marker(), list(line.get_ydata())) for line in ax.lines
+            if not line.get_label().startswith("_") and line.get_zorder() != 1}
+
+
+def pooled_points(ax):
+    """[(x, y, marker, face colour, edge colour)] of the pooled points: the error-bar containers with data
+    (the legend-only entry has NaN x), in drawing order."""
+    out = []
+    for container in ax.containers:
+        line = container[0]
+        if not np.isnan(line.get_xdata()[0]):
+            out.append((line.get_xdata()[0], line.get_ydata()[0], line.get_marker(), line.get_markerfacecolor(),
+                        line.get_markeredgecolor()))
+    return out
 
 
 def test_spearman_returns_a_figure_without_pyplot_or_files(tmp_path, monkeypatch):
@@ -377,17 +390,21 @@ def test_spearman_returns_a_figure_without_pyplot_or_files(tmp_path, monkeypatch
     assert plt.get_fignums() == [] and list(tmp_path.iterdir()) == []
 
 
-def test_spearman_lines_per_severity_and_pooled_diamonds_apart():
+def test_spearman_lines_per_severity_and_pooled_hollow_markers_apart():
     ax = spearman_fig().axes[0]
-    lines = {line.get_label(): list(line.get_ydata()) for line in ax.lines if line.get_marker() == "o"}
-    assert lines == {"m_a": [0.2, 0.4], "m_b": [0.3, 0.5]}  # pooled rows not on the lines
-    pooled = marked(ax, "D")
-    assert sorted(y for _, y in pooled) == [0.6, 0.7] and len({x for x, _ in pooled}) == 2  # nudged apart
-    assert sorted(x for x, _ in pooled) == pytest.approx([1.425, 1.575])  # slot 1.0 + step 0.5, nudged ±0.3·step/2
+    okabe = PALETTES["okabe_ito"]
+    assert per_severity_lines(ax) == {"m_a": ("o", [0.2, 0.4]), "m_b": ("s", [0.3, 0.5])}  # pooled rows not on the lines
+    pooled = pooled_points(ax)
+    assert [(y, marker, face, edge) for _, y, marker, face, edge in pooled] == [
+        (0.6, "o", "white", okabe[0]), (0.7, "s", "white", okabe[1])]  # each label's own shape, hollow, its colour
+    assert [x for x, *_ in pooled] == pytest.approx([1.425, 1.575])  # slot 1.0 + step 0.5, nudged ±0.3·step/2
     ticks = dict(zip([t.get_text() for t in ax.get_xticklabels()], ax.get_xticks()))
     assert ticks["pooled"] == pytest.approx(1.5) and ax.get_xlim() == (0, pytest.approx(1.75))
     assert ax.get_legend_handles_labels()[1] == ["m_a", "m_b", "Spearman ρ = 0", SEED_BAND.format(10), POOLED_ENTRY]
     assert reference_ys(ax) == [0] and ax.get_ylim() == (-1.05, 1.05)
+    handles, names = ax.get_legend_handles_labels()
+    key = handles[names.index(POOLED_ENTRY)][0]  # the legend entry: a grey hollow circle
+    assert (key.get_marker(), key.get_markerfacecolor(), key.get_markeredgecolor()) == ("o", "white", "#7f7f7f")
     (note,) = ax.texts
     assert " ".join(note.get_text().split()) == "1 interval not shown: no CI: fewer than two seeds (1)"
 
@@ -395,22 +412,22 @@ def test_spearman_lines_per_severity_and_pooled_diamonds_apart():
 def test_spearman_show_pooled_false_and_from_yaml():
     s = PlotStyle({"figures": {"spearman_vs_severity": {"statistic": "s1", "show_pooled": False}}})
     for ax in (spearman_fig(show_pooled=False).axes[0], spearman_vs_severity(SPEARMAN, style=s).axes[0]):
-        assert not marked(ax, "D") and "pooled" not in [t.get_text() for t in ax.get_xticklabels()]
+        assert not pooled_points(ax) and "pooled" not in [t.get_text() for t in ax.get_xticklabels()]
         assert not any("pooled" in label for label in ax.get_legend_handles_labels()[1])
         assert ax.get_xlim() == (0, pytest.approx(1.02))
 
 
 def test_spearman_pooled_entry_without_intervals_include_and_ylim():
     no_ci = SPEARMAN.assign(ci_low=np.where(SPEARMAN["pooled"], NAN, SPEARMAN["ci_low"]))
-    assert "◆ all severities pooled" in spearman_fig(no_ci).axes[0].get_legend_handles_labels()[1]
+    assert "all severities pooled (hollow markers)" in spearman_fig(no_ci).axes[0].get_legend_handles_labels()[1]
     ax = spearman_fig(include={"severities": [1.0]}).axes[0]
-    assert sorted(y for _, y in marked(ax, "D")) == [0.6, 0.7]  # pooled rows kept by include
+    assert sorted(y for _, y, *_ in pooled_points(ax)) == [0.6, 0.7]  # pooled rows kept by include
     assert spearman_fig(ylim=[0, 1]).axes[0].get_ylim() == (0, 1)
 
 
 def test_spearman_models_ax_and_errors():
-    lines = [line.get_label() for line in spearman_fig(models=MODELS).axes[0].lines if line.get_marker() == "o"]
-    assert lines == ["m_b", "m_a"]
+    ordered = per_severity_lines(spearman_fig(models=MODELS).axes[0])
+    assert list(ordered) == ["m_b", "m_a"] and [m for m, _ in ordered.values()] == ["o", "s"]  # shape follows the order
     fig, axes = new_figure(PlotStyle.default().resolve("grid"), ncols=2)
     assert spearman_fig(ax=axes[1], legend={"show": False}) is fig and axes[1].lines and not axes[0].lines
     with pytest.raises(ValueError, match=r"^spearman_vs_severity: no statistic given; choose one of \['s1', 's2'\]"):
@@ -419,3 +436,15 @@ def test_spearman_models_ax_and_errors():
         spearman_fig(statistic="ks")
     with pytest.raises(ValueError, match=r"^spearman_vs_severity: no rows to plot after include"):
         spearman_fig(include={"labels": ["m_z"]})
+
+
+def test_line_figures_draw_each_label_with_its_marker_shape():
+    figs = {"statistic": stat_fig(annotate_ends=False), "share": share_fig(annotate_ends=False),
+            "auroc": auroc_fig(min_drop=0.02), "by_drop": by_drop_fig()}
+    for name, fig in figs.items():
+        drawn = [(line.get_label(), line.get_marker()) for line in fig.axes[0].lines if line.get_zorder() != 1]
+        expected = [("m_a", "o"), ("m_b", "s")] if name != "auroc" else [("m_a", "o")]  # auroc at 0.02: m_a only
+        assert drawn == expected, name
+    star = PlotStyle({"markers": {"by_label": {"m_b": "*"}}})
+    starred = share_fig(style=star, annotate_ends=False).axes[0].lines
+    assert [line.get_marker() for line in starred if line.get_zorder() != 1] == ["o", "*"]  # markers.by_label wins

@@ -19,7 +19,15 @@ from silent_rag.plots._common import (
     reference_line,
     require_rows,
 )
-from silent_rag.plots.style import FIGURE_DEFAULTS, PALETTES, PlotStyle, color_for, display_name, style_context
+from silent_rag.plots.style import (
+    FIGURE_DEFAULTS,
+    PALETTES,
+    PlotStyle,
+    color_for,
+    display_name,
+    marker_for,
+    style_context,
+)
 
 FIGURE_DEFAULTS["statistic_vs_severity_all_test_questions"] = {"statistic": None, "annotate_ends": True}
 FIGURE_DEFAULTS["share_of_significant_windows_vs_severity"] = {"min_drop": None, "annotate_ends": True}
@@ -28,7 +36,7 @@ FIGURE_DEFAULTS["auroc_vs_severity"] = {"statistic": None, "min_drop": None, "ne
 FIGURE_DEFAULTS["auroc_vs_min_ndcg10_drop"] = {"statistic": None, "negatives": "unmodified"}
 FIGURE_DEFAULTS["spearman_vs_severity"] = {"statistic": None, "show_pooled": True}
 AUROC_YLABEL = "AUROC (windows with a significant drop\nvs {} windows)"  # {} = the negatives' display name
-POOLED = "◆ all severities pooled"
+POOLED = "all severities pooled (hollow markers)"
 RANGE_BAND = "shaded: range over seeds (not a CI)"
 SEVERITY_TEXT = "Severity (fraction of document vectors replaced)"
 
@@ -70,7 +78,8 @@ def statistic_vs_severity_all_test_questions(stats, *, statistic=None, annotate_
             rows = table[table["failure"].eq(label)].sort_values("severity")
             text, color = display_name("label", label, settings), color_for(label, settings, labels)
             line_with_band(ax, rows["severity"], rows["mean"], settings, color=color,
-                           label="_nolegend_" if settings["annotate_ends"] else text, low=rows["min"], high=rows["max"])
+                           label="_nolegend_" if settings["annotate_ends"] else text, low=rows["min"], high=rows["max"],
+                           marker=marker_for(label, settings, labels))
             ends.append((float(rows["mean"].iloc[-1]), text, color))
         reference_line(ax, settings, label=f"clean baseline = {clean_value:.3f}", y=clean_value)
         band_legend_entry(ax, settings, RANGE_BAND)
@@ -119,6 +128,7 @@ def share_of_significant_windows_vs_severity(shares, *, min_drop=None, annotate_
             rows = table[table["failure"].eq(label)].sort_values("severity")
             text, color = display_name("label", label, settings), color_for(label, settings, labels)
             line_with_band(ax, rows["severity"], rows["share_percent"], settings, color=color,
+                           marker=marker_for(label, settings, labels),
                            label="_nolegend_" if settings["annotate_ends"] else text)
             ends.append((float(rows["share_percent"].iloc[-1]), text, color))
         reference_line(ax, settings, label=f"clean baseline = {clean_share:.1f}%", y=clean_share)
@@ -223,6 +233,7 @@ def auroc_vs_severity(auroc, *, statistic=None, min_drop=None, negatives=None, m
         for label in labels:
             rows = table[table["failure"].eq(label)].sort_values("severity")
             line_with_band(ax, rows["severity"], rows["auroc"], settings, color=color_for(label, settings, labels),
+                           marker=marker_for(label, settings, labels),
                            label=display_name("label", label, settings), low=rows["ci_low"], high=rows["ci_high"])
         reference_line(ax, settings, label="AUROC 0.5", y=0.5)
         ci_text = _seed_ci_text(table)
@@ -265,6 +276,7 @@ def auroc_vs_min_ndcg10_drop(auroc, *, statistic=None, negatives=None, models=No
             rows = table[table["failure"].eq(label)].sort_values("min_mean_ndcg10_drop")
             line_with_band(ax, rows["min_mean_ndcg10_drop"], rows["auroc"], settings,
                            color=color_for(label, settings, labels), label=display_name("label", label, settings),
+                           marker=marker_for(label, settings, labels),
                            low=rows["ci_low"], high=rows["ci_high"])
         reference_line(ax, settings, label="AUROC 0.5", y=0.5)
         ci_text = _seed_ci_text(table)
@@ -280,10 +292,16 @@ def auroc_vs_min_ndcg10_drop(auroc, *, statistic=None, negatives=None, models=No
 
 def _pooled_entry(ci_text: str) -> str:
     """The pooled legend entry on three lines, so it is no wider than the other entries:
-    "◆ all severities pooled;", "error bars: " + _seed_ci_text's text up to its parenthesis,
+    "all severities pooled (hollow markers);", "error bars: " + _seed_ci_text's text up to its parenthesis,
     then the parenthesis ("(whole seeds resampled)") on its own line."""
     head, sep, tail = ci_text.partition(" (")
     return f"{POOLED};\nerror bars: {head}" + (f"\n({tail}" if sep else "")
+
+
+def _hollow(color: str, lines: dict) -> dict:
+    """Marker keywords for a hollow marker: white fill, edge in `color`."""
+    return {"markersize": lines["marker_size"], "markerfacecolor": "white", "markeredgecolor": color,
+            "markeredgewidth": 2}
 
 
 def spearman_vs_severity(spearman, *, statistic=None, show_pooled=None, models=None, style=None, ax=None, **shared):
@@ -291,8 +309,9 @@ def spearman_vs_severity(spearman, *, statistic=None, show_pooled=None, models=N
     vs severity, one line per label, from table 6 (spearman_statistic_vs_window_mean_ndcg10_drop).
     Per severity, rho shows how well the statistic tracks the drop at a fixed dose; the pooled
     value (all severities together) also contains the statistic's response to severity, so it is
-    drawn apart: a diamond per label with error bars at an extra x position labelled "pooled",
-    labels nudged sideways, not joined to the lines (show_pooled=False leaves it out). Band and
+    drawn apart: each label's own marker shape, hollow (white fill, coloured edge), with error
+    bars at an extra x position labelled "pooled", labels nudged sideways, not joined to the lines
+    (show_pooled=False leaves it out). The legend names them with a grey hollow circle. Band and
     error bars are the seed-cluster 95% CI (whole seeds resampled: variability across random
     seeds over the same test questions, not question-level sampling uncertainty).
 
@@ -325,23 +344,25 @@ def spearman_vs_severity(spearman, *, statistic=None, show_pooled=None, models=N
         fig, ax = figure_axes(settings, ax)
         for i, label in enumerate(labels):
             color, text = color_for(label, settings, labels), display_name("label", label, settings)
+            marker = marker_for(label, settings, labels)
             rows = per_severity[per_severity["failure"].eq(label)].sort_values("severity")
             if len(rows):
                 line_with_band(ax, rows["severity"], rows["rho"], settings, color=color, label=text,
-                               low=rows["ci_low"], high=rows["ci_high"])
+                               low=rows["ci_low"], high=rows["ci_high"], marker=marker)
             for _, row in pooled_rows[pooled_rows["failure"].eq(label)].iterrows():
                 x = x_pooled + (i - (len(labels) - 1) / 2) * 0.3 * step / max(len(labels) - 1, 1)
                 ax.errorbar(x, row["rho"], yerr=[[row["rho"] - row["ci_low"]], [row["ci_high"] - row["rho"]]],
-                            fmt="D", color=color, markersize=lines["marker_size"], elinewidth=lines["width"],
-                            capsize=lines["marker_size"] / 2, label="_nolegend_")
+                            marker=marker, linestyle="none", color=color, **_hollow(color, lines),
+                            elinewidth=lines["width"], capsize=lines["marker_size"] / 2, label="_nolegend_")
         reference_line(ax, settings, label="Spearman ρ = 0", y=0)
         ci_text = _seed_ci_text(per_severity)
         if ci_text is not None:
             band_legend_entry(ax, settings, f"shaded: {ci_text}")
         if len(pooled_rows):
             pooled_text = _seed_ci_text(pooled_rows)
-            ax.errorbar([np.nan], [np.nan], yerr=[[np.nan], [np.nan]], fmt="D", color=settings["colors"]["reference_grey"],
-                        markersize=lines["marker_size"], elinewidth=lines["width"],
+            grey = settings["colors"]["reference_grey"]
+            ax.errorbar([np.nan], [np.nan], yerr=[[np.nan], [np.nan]], marker="o", linestyle="none", color=grey,
+                        **_hollow(grey, lines), elinewidth=lines["width"],
                         label=POOLED if pooled_text is None else _pooled_entry(pooled_text))
             ax.set_xticks([*severities, x_pooled], [f"{s:g}" for s in severities] + ["pooled"])
             ax.set_xlim(0, x_pooled + step / 2)
