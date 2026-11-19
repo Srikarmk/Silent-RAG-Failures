@@ -16,6 +16,7 @@ from silent_rag.plots._common import (
     label_order,
     line_with_band,
     nan_note,
+    point_with_interval,
     reference_line,
     require_rows,
 )
@@ -299,9 +300,10 @@ def _pooled_entry(ci_text: str) -> str:
 
 
 def _hollow(color: str, lines: dict) -> dict:
-    """Marker keywords for a hollow marker: white fill, edge in `color`."""
+    """Marker keywords for the hollow legend-entry marker: white fill, edge in `color`, edge width
+    lines.width, as point_with_interval draws the hollow pooled points."""
     return {"markersize": lines["marker_size"], "markerfacecolor": "white", "markeredgecolor": color,
-            "markeredgewidth": 2}
+            "markeredgewidth": lines["width"]}
 
 
 def spearman_vs_severity(spearman, *, statistic=None, show_pooled=None, models=None, style=None, ax=None, **shared):
@@ -351,9 +353,8 @@ def spearman_vs_severity(spearman, *, statistic=None, show_pooled=None, models=N
                                low=rows["ci_low"], high=rows["ci_high"], marker=marker)
             for _, row in pooled_rows[pooled_rows["failure"].eq(label)].iterrows():
                 x = x_pooled + (i - (len(labels) - 1) / 2) * 0.3 * step / max(len(labels) - 1, 1)
-                ax.errorbar(x, row["rho"], yerr=[[row["rho"] - row["ci_low"]], [row["ci_high"] - row["rho"]]],
-                            marker=marker, linestyle="none", color=color, **_hollow(color, lines),
-                            elinewidth=lines["width"], capsize=lines["marker_size"] / 2, label="_nolegend_")
+                point_with_interval(ax, x, row["rho"], row["ci_low"], row["ci_high"], settings, color=color,
+                                    marker=marker, hollow=True)  # bar from its ends: a CI may exclude rho
         reference_line(ax, settings, label="Spearman ρ = 0", y=0)
         ci_text = _seed_ci_text(per_severity)
         if ci_text is not None:

@@ -371,15 +371,10 @@ def per_severity_lines(ax):
 
 
 def pooled_points(ax):
-    """[(x, y, marker, face colour, edge colour)] of the pooled points: the error-bar containers with data
-    (the legend-only entry has NaN x), in drawing order."""
-    out = []
-    for container in ax.containers:
-        line = container[0]
-        if not np.isnan(line.get_xdata()[0]):
-            out.append((line.get_xdata()[0], line.get_ydata()[0], line.get_marker(), line.get_markerfacecolor(),
-                        line.get_markeredgecolor()))
-    return out
+    """[(x, y, marker, face colour, edge colour)] of the pooled points: point_with_interval's markers
+    (gid interval_marker; the legend-only entry has none), in drawing order."""
+    return [(line.get_xdata()[0], line.get_ydata()[0], line.get_marker(), line.get_markerfacecolor(),
+             line.get_markeredgecolor()) for line in ax.lines if line.get_gid() == "interval_marker"]
 
 
 def test_spearman_returns_a_figure_without_pyplot_or_files(tmp_path, monkeypatch):
@@ -448,3 +443,18 @@ def test_line_figures_draw_each_label_with_its_marker_shape():
     star = PlotStyle({"markers": {"by_label": {"m_b": "*"}}})
     starred = share_fig(style=star, annotate_ends=False).axes[0].lines
     assert [line.get_marker() for line in starred if line.get_zorder() != 1] == ["o", "*"]  # markers.by_label wins
+
+
+def test_spearman_pooled_interval_that_excludes_rho_draws_with_markers_above_heavier_edges():
+    excluded = SPEARMAN.assign(ci_low=np.where(SPEARMAN["pooled"] & SPEARMAN["failure"].eq("m_a"), 0.65,
+                                               SPEARMAN["ci_low"]))  # m_a pooled: rho 0.6 not in [0.65, 0.7]
+    ax = spearman_fig(excluded).axes[0]
+    bars = [c.get_segments()[0] for c in ax.collections if c.get_gid() == "interval_bar"]
+    assert [(round(seg[0][1], 3), round(seg[1][1], 3)) for seg in bars] == [(0.65, 0.7), (0.6, 0.8)]
+    assert [y for _, y, *_ in pooled_points(ax)] == [0.6, 0.7]  # markers at the estimates
+    markers = [line for line in ax.lines if line.get_gid() == "interval_marker"]
+    bar_z = max(c.get_zorder() for c in ax.collections if c.get_gid() == "interval_bar")
+    assert all(m.get_zorder() > bar_z and m.get_markeredgewidth() == 2.5 for m in markers)  # above; lines.width
+    handles, names = ax.get_legend_handles_labels()
+    key = handles[[n.startswith("all severities pooled") for n in names].index(True)][0]
+    assert key.get_markeredgewidth() == 2.5  # the legend entry matches the points
