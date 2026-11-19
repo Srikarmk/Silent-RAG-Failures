@@ -356,7 +356,7 @@ SPEARMAN = pd.DataFrame([
     srow("m_b", 0.5, 0.3, 0.2, 0.4), srow("m_b", 1.0, 0.5, 0.4, 0.6),
     srow("m_a", NAN, 0.6, 0.5, 0.7), srow("m_b", NAN, 0.7, 0.6, 0.8, n_seeds=8),
     srow("m_a", 0.5, -0.1, -0.2, 0.0, statistic="s2")])
-POOLED_ENTRY = "◆ all severities pooled; error bars: 95% CI over 8–10 random seeds (whole seeds resampled)"
+POOLED_ENTRY = "◆ all severities pooled;\nerror bars: 95% CI over 8–10 random seeds\n(whole seeds resampled)"  # three lines
 
 
 def spearman_fig(table=SPEARMAN, statistic="s1", **kwargs):

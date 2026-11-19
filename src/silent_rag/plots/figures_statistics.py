@@ -278,6 +278,14 @@ def auroc_vs_min_ndcg10_drop(auroc, *, statistic=None, negatives=None, models=No
     return fig
 
 
+def _pooled_entry(ci_text: str) -> str:
+    """The pooled legend entry on three lines, so it is no wider than the other entries:
+    "◆ all severities pooled;", "error bars: " + _seed_ci_text's text up to its parenthesis,
+    then the parenthesis ("(whole seeds resampled)") on its own line."""
+    head, sep, tail = ci_text.partition(" (")
+    return f"{POOLED};\nerror bars: {head}" + (f"\n({tail}" if sep else "")
+
+
 def spearman_vs_severity(spearman, *, statistic=None, show_pooled=None, models=None, style=None, ax=None, **shared):
     """Spearman correlation between one monitoring statistic and the window's mean nDCG@10 drop,
     vs severity, one line per label, from table 6 (spearman_statistic_vs_window_mean_ndcg10_drop).
@@ -334,7 +342,7 @@ def spearman_vs_severity(spearman, *, statistic=None, show_pooled=None, models=N
             pooled_text = _seed_ci_text(pooled_rows)
             ax.errorbar([np.nan], [np.nan], yerr=[[np.nan], [np.nan]], fmt="D", color=settings["colors"]["reference_grey"],
                         markersize=lines["marker_size"], elinewidth=lines["width"],
-                        label=POOLED if pooled_text is None else f"{POOLED}; error bars: {pooled_text}")
+                        label=POOLED if pooled_text is None else _pooled_entry(pooled_text))
             ax.set_xticks([*severities, x_pooled], [f"{s:g}" for s in severities] + ["pooled"])
             ax.set_xlim(0, x_pooled + step / 2)
         elif len(severities):
