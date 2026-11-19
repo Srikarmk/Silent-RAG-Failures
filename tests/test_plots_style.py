@@ -14,6 +14,7 @@ from silent_rag.plots.style import (  # noqa: E402
     color_for,
     deep_merge,
     display_name,
+    marker_for,
     new_figure,
     point_labels,
     save_figure,
@@ -219,6 +220,33 @@ def test_palette_by_name_or_list(settings):
         color_for("c", listed, ["a", "b", "c"])
     with pytest.raises(ValueError, match="unknown palette 'viridis'"):
         color_for("a", deep_merge(settings, {"colors": {"palette": "viridis"}}), ["a"])
+
+
+def test_markers_follow_the_colour_order_whatever_subset_is_drawn(settings):
+    s = deep_merge(settings, {"order": {"labels": ["a", "b", "c"]}})
+    shapes = SCHEMA_DEFAULTS["markers"]["sequence"]
+    assert shapes[:4] == ["o", "s", "^", "X"] and "D" not in shapes and len(set(shapes)) == len(shapes) == 8
+    assert marker_for("c", s, ["c"]) == marker_for("c", s, ["b", "c"]) == "^"  # position 2, as its colour
+    palette = style.PALETTES["okabe_ito"]
+    for given in (["c"], ["c", "a"], ["b", "a", "c"]):  # shape and colour always come from the same position
+        for subset in (s, settings):
+            for label in given:
+                assert shapes.index(marker_for(label, subset, given)) == palette.index(color_for(label, subset, given))
+    assert marker_for("c", settings, ["c", "a"]) == "o"  # no order.labels: the given order
+    assert marker_for("c", deep_merge(s, {"markers": {"by_label": {"c": "*"}}}), ["c"]) == "*"
+
+
+def test_marker_sequence_from_yaml_too_few_shapes_and_unknown_keys(tmp_path):
+    s = PlotStyle.from_yaml(write_yaml(tmp_path, "markers:\n  sequence: [o, s]\n  by_label: {b: d}\n")).resolve(FIG)
+    assert s["markers"] == {"sequence": ["o", "s"], "by_label": {"b": "d"}}  # the list replaces; by_label merges
+    assert [marker_for(x, s, ["a", "b", "c"]) for x in "ab"] == ["o", "d"]
+    with pytest.raises(ValueError, match="3 labels but 2 marker shapes"):
+        marker_for("c", s, ["a", "b", "c"])
+    with pytest.raises(ValueError, match="is not in order.labels or the given labels"):
+        marker_for("z", s, ["a"])
+    with pytest.raises(ValueError, match="unknown style key 'markers.shape'"):
+        PlotStyle({"markers": {"shape": "o"}})
+    assert PlotStyle.default().resolve(FIG, markers={"by_label": {"a": "s"}})["markers"]["by_label"] == {"a": "s"}
 
 
 def test_display_name_falls_back_to_the_key(settings):

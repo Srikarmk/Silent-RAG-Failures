@@ -21,6 +21,8 @@ SCHEMA_DEFAULTS = {
     "lines": {"width": 2.5, "marker_size": 8, "band_alpha": 0.18, "reference_line_style": "--",
               "reference_line_width": 1.5},
     "colors": {"palette": "okabe_ito", "reference_grey": "#7f7f7f", "by_label": {}},
+    # one marker shape per label, beside its colour; no "D": the diamond is not used for a label
+    "markers": {"sequence": ["o", "s", "^", "X", "v", "P", "h", "<"], "by_label": {}},
     "order": {"labels": [], "statistics": [], "severities": []},
     "display_names": {"label": {}, "statistic": {}, "questions": {}, "negatives": {}},
     "include": {"labels": None, "statistics": None, "severities": None, "min_drops": None},
@@ -207,12 +209,33 @@ def color_for(label, settings: dict, labels) -> str:
         if palette not in PALETTES:
             raise ValueError(f"unknown palette {palette!r}; known: {sorted(PALETTES)}, or give a list of colours")
         palette = PALETTES[palette]
+    position, n_labels = _label_position(label, settings, labels)
+    if position >= len(palette):
+        raise ValueError(f"{n_labels} labels but {len(palette)} palette colours; add colours or colors.by_label")
+    return palette[position]
+
+
+def marker_for(label, settings: dict, labels) -> str:
+    """The marker shape of `label` (a matplotlib marker code): markers.by_label if set there, else
+    markers.sequence at the label's position, by the same order rules as color_for, so a label's
+    shape and colour go together and stay fixed whichever subset a figure draws."""
+    markers = settings["markers"]
+    if label in markers["by_label"]:
+        return markers["by_label"][label]
+    position, n_labels = _label_position(label, settings, labels)
+    if position >= len(markers["sequence"]):
+        raise ValueError(f"{n_labels} labels but {len(markers['sequence'])} marker shapes; "
+                         "add shapes to markers.sequence or markers.by_label")
+    return markers["sequence"][position]
+
+
+def _label_position(label, settings: dict, labels) -> tuple[int, int]:
+    """(position of `label`, number of labels) in order.labels followed by the rest of `labels` in
+    their given order; shared by color_for and marker_for."""
     order = list(dict.fromkeys([*settings["order"]["labels"], *labels]))
     if label not in order:
         raise ValueError(f"label {label!r} is not in order.labels or the given labels")
-    if order.index(label) >= len(palette):
-        raise ValueError(f"{len(order)} labels but {len(palette)} palette colours; add colours or colors.by_label")
-    return palette[order.index(label)]
+    return order.index(label), len(order)
 
 
 def display_name(kind: str, key, settings: dict):
