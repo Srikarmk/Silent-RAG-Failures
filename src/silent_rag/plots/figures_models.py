@@ -18,7 +18,15 @@ from silent_rag.plots._common import (
     reference_line,
     require_rows,
 )
-from silent_rag.plots.style import FIGURE_DEFAULTS, PlotStyle, color_for, display_name, point_labels, style_context
+from silent_rag.plots.style import (
+    FIGURE_DEFAULTS,
+    PlotStyle,
+    color_for,
+    display_name,
+    marker_for,
+    point_labels,
+    style_context,
+)
 
 DOSE_SCALES = ("drop", "ndcg", "percent_of_baseline")
 FIGURE_DEFAULTS["dose_response_ndcg10_drop"] = {"scale": "drop", "annotate_ends": True}
@@ -39,11 +47,12 @@ def _one_value(table, column: str) -> float:
 
 
 def _labelled_points(ax, xs, ys, lows, highs, labels, settings: dict) -> None:
-    """One point per label with an error bar from low to high, in the label's colour, named next
-    to the point (point_labels) rather than in the legend."""
+    """One point per label with an error bar from low to high, in the label's colour and marker
+    shape (marker_for), named next to the point (point_labels) rather than in the legend."""
     lines = settings["lines"]
     for x, y, low, high, label in zip(xs, ys, lows, highs, labels, strict=True):
-        ax.errorbar(x, y, yerr=[[y - low], [high - y]], fmt="o", color=color_for(label, settings, labels),
+        ax.errorbar(x, y, yerr=[[y - low], [high - y]], color=color_for(label, settings, labels),
+                    marker=marker_for(label, settings, labels), linestyle="none",  # any marker, not only fmt's
                     markersize=lines["marker_size"], elinewidth=lines["width"], capsize=lines["marker_size"] / 2,
                     label="_nolegend_")
     point_labels(ax, xs, ys, labels, settings)
@@ -144,7 +153,7 @@ def dose_response_ndcg10_drop(drops, *, scale=None, annotate_ends=None, models=N
             a = convert(np.r_[[np.nan] * len(start), rows["ci_low"]])
             b = convert(np.r_[[np.nan] * len(start), rows["ci_high"]])
             line_with_band(ax, x, y, settings, color=color, label="_nolegend_" if settings["annotate_ends"] else name,
-                           low=np.fmin(a, b), high=np.fmax(a, b))
+                           low=np.fmin(a, b), high=np.fmax(a, b), marker=marker_for(label, settings, labels))
             ends.append((y[-1], name, color))
         if scale == "drop":
             reference_line(ax, settings, label="no drop (clean baseline)", y=0)

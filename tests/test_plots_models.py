@@ -300,3 +300,30 @@ def test_drop_at_severity_ignores_the_clean_row():
     assert with_clean.get_legend_handles_labels()[1] == without.get_legend_handles_labels()[1]
     with pytest.raises(ValueError, match=r"severity 0: \['m_b', 'm_a'\]; .*table 16: \[\]$"):  # clean is not listed
         at_severity(severity=0.0)
+
+
+def test_dose_lines_use_each_labels_marker_shape():
+    plain = series(dose(annotate_ends=False))
+    assert [(line.get_label(), line.get_marker()) for line in plain] == [("m_a", "o"), ("m_b", "s")]
+    ordered = series(dose(models=MODELS, annotate_ends=False))  # m_b first: it gets the first shape and colour
+    assert [(line.get_label(), line.get_marker()) for line in ordered] == [("m_b", "o"), ("m_a", "s")]
+    star = PlotStyle({"markers": {"by_label": {"m_a": "*"}}})
+    assert series(dose(style=star, annotate_ends=False), "m_a").get_marker() == "*"
+
+
+def shapes(ax):
+    """(x, marker) per drawn point (the NaN legend-only entry skipped), in drawing order."""
+    out = []
+    for container in ax.containers:
+        line = container[0]
+        if not np.isnan(line.get_xdata()[0]):
+            out.append((line.get_xdata()[0], line.get_marker(), line.get_linestyle()))
+    return out
+
+
+def test_labelled_points_use_each_labels_marker_shape_and_any_marker():
+    assert shapes(models_fig().axes[0]) == [(0.95, "o", "None"), (0.80, "s", "None")]  # m_b first: higher cosine
+    assert shapes(at_severity().axes[0]) == [(0.95, "o", "None"), (0.80, "s", "None")]
+    polygon = (5, 1, 0)  # a matplotlib marker fmt= could not take
+    got = shapes(models_fig(markers={"by_label": {"m_a": polygon}}).axes[0])
+    assert got[1][:2] == (0.80, polygon) and got[0][1] == "o"
