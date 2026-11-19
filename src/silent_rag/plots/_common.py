@@ -63,15 +63,17 @@ def label_order(labels, settings: dict, models: pd.DataFrame | None = None) -> l
     return [label for label in settings["order"]["labels"] if label in present] + rest
 
 
-def line_with_band(ax, x, y, settings: dict, *, color, label, low=None, high=None):
-    """A line with markers and, when low and high are given, a shaded band between them
-    (lines.band_alpha). Returns (line, band or None). The band carries no legend entry; the
-    caller says what it is (CI over questions, CI over seeds, range over seeds)."""
+def line_with_band(ax, x, y, settings: dict, *, color, label, low=None, high=None, marker="o"):
+    """A line with markers (shape `marker`, a matplotlib marker code; figures pass the label's
+    marker_for) and, when low and high are given, a shaded band between them (lines.band_alpha).
+    Returns (line, band or None). The band carries no legend entry; the caller says what it is
+    (CI over questions, CI over seeds, range over seeds)."""
     lines = settings["lines"]
     band = None
     if low is not None and high is not None:
         band = ax.fill_between(x, low, high, color=color, alpha=lines["band_alpha"], linewidth=0)
-    (line,) = ax.plot(x, y, "o-", color=color, label=label, linewidth=lines["width"], markersize=lines["marker_size"])
+    (line,) = ax.plot(x, y, color=color, label=label, marker=marker, linestyle="-", linewidth=lines["width"],
+                      markersize=lines["marker_size"])
     return line, band
 
 

@@ -102,6 +102,15 @@ def test_line_with_band_draws_one_line_and_one_band():
     assert no_band is None
 
 
+def test_line_with_band_marker_defaults_to_a_circle_and_takes_any_shape():
+    s = resolved()
+    default, _ = line_with_band(axes(), [0, 1], [1, 2], s, color="k", label="a")
+    assert (default.get_marker(), default.get_linestyle(), default.get_markersize()) == ("o", "-", 8)
+    for shape in ("s", "^", "X", "h", "<"):  # the default marker sequence beyond the circle
+        line, _ = line_with_band(axes(), [0, 1], [1, 2], s, color="k", label="a", marker=shape)
+        assert (line.get_marker(), line.get_linestyle()) == (shape, "-")
+
+
 def test_reference_line_is_grey_dashed_and_in_the_legend():
     ax, s = axes(), resolved()
     h = reference_line(ax, s, label="AUROC 0.5", y=0.5)
