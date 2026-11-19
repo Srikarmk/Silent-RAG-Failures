@@ -36,7 +36,7 @@ from silent_rag.eval.question_vulnerability import (
 )
 from silent_rag.eval.window_questions import window_bootstrap_ci_vs_mean_ndcg10_drop, window_per_question_ndcg10_differences
 from silent_rag.inject.base import REGISTRY as INJECTORS
-from silent_rag.manifest import write_manifest
+from silent_rag.manifest import git_state, write_manifest
 
 
 class TableNotApplicable(Exception):
@@ -195,12 +195,13 @@ def main(argv=None, loader=data.load, make_retriever=None) -> None:
     parser.add_argument("--only", nargs="+", help="compute only these tables")
     parser.add_argument("--skip", nargs="+", help="skip these tables")
     args = parser.parse_args(argv)
+    git_at_start = git_state(REPO_ROOT)  # the code that produces the tables, before anything else runs
     run_config, analysis, out = load_yaml(args.config), load_yaml(args.analysis), Path(args.out)
     status, seconds = analyze(run_config, analysis, pd.read_parquet(args.results), out, final=args.final,
                               only=args.only, skip=args.skip, loader=loader, make_retriever=make_retriever)
     write_manifest(out, run_id=runner.run_id_from_run_config(run_config), analysis_config=analysis,
                    input_files={"run_config": args.config, "analysis_config": args.analysis, "results": args.results},
-                   status=status, seconds=seconds, repo_dir=REPO_ROOT)
+                   status=status, seconds=seconds, repo_dir=REPO_ROOT, git_at_start=git_at_start)
     for name, outcome in status.items():
         print(f"{name}: {outcome}")
 

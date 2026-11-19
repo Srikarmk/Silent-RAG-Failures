@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from silent_rag import analyze_benchmark_results as abr
+from silent_rag import manifest as manifest_module
 from silent_rag import run as runner
 from silent_rag.inject.f1_partial_upgrade import PartialUpgrade
 from silent_rag.pipeline import Retriever
@@ -119,3 +120,26 @@ def test_main_writes_a_manifest_of_every_table_and_input(toy):
     written = [t for t, entry in manifest["tables"].items() if entry["status"] == "written"]
     assert len(written) == 15 and all(manifest["tables"][t]["seconds"] > 0 for t in written)
     assert manifest["run_id"] == runner.run_id_from_run_config(RUN)
+
+
+def test_main_reads_the_git_state_before_the_run_and_again_when_writing(toy, monkeypatch):
+    runs, analysis, out = toy
+    argv, _ = cli(out, RUN, analysis, runs)
+    calls = []
+    def state(commit, paths):
+        return {"commit": commit, "uncommitted_changes": bool(paths), "uncommitted_paths": paths, "note": None}
+    def logged(name, function):
+        def wrapper(*args, **kwargs):
+            calls.append(name)
+            return function(*args, **kwargs)
+        return wrapper
+    monkeypatch.setattr(abr, "git_state", logged("start", lambda repo: state("c" * 40, ["x.py"])))
+    monkeypatch.setattr(manifest_module, "git_state", logged("end", lambda repo: state("d" * 40, ["x.py", "late.txt"])))
+    monkeypatch.setattr(abr, "load_yaml", logged("yaml", abr.load_yaml))
+    monkeypatch.setattr(abr, "analyze", logged("analyze", abr.analyze))
+    abr.main(argv, **FAKES)
+    assert calls == ["start", "yaml", "yaml", "analyze", "end"]  # start before anything, end after the tables
+    git = json.loads((out / "manifest.json").read_text())["git"]
+    assert git == {"commit": "c" * 40, "uncommitted_changes": True, "uncommitted_paths": ["x.py"], "note": None,
+                   "end_commit": "d" * 40, "uncommitted_paths_at_end": ["x.py", "late.txt"],
+                   "commit_changed_during_run": True}
