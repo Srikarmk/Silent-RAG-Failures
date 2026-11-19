@@ -42,6 +42,18 @@ class Distractors(Injector):
         if source not in data.DISTRACTOR_SOURCES:
             raise ValueError(f"source must be one of {sorted(data.DISTRACTOR_SOURCES)}, got {source!r}")
 
+    @classmethod
+    def check_dataset(cls, params: dict, severities: list[float], dataset) -> None:
+        # severity is a share of the target corpus, so a big corpus can need more docs than
+        # the source has (ArguAna: ~8.7k, so FiQA's ~57k docs fail above ~0.15)
+        source = params.get("source", "arguana")
+        available = len(cls.load(source))
+        need = round(max(severities) * len(dataset.corpus))
+        if need > available:
+            most = available / len(dataset.corpus)
+            raise ValueError(f"severity {max(severities)} adds {need} docs but {source} has {available}; "
+                             f"on this dataset the largest severity that fits is {most:.3f}")
+
     def attach(self, retriever, state: RetrievalState) -> None:
         corpus = self.load(self.source)
         ids = sorted(corpus)

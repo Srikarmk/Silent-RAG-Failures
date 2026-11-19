@@ -1,0 +1,68 @@
+# #73 dev-only check: percentile (clean-window) rule vs permutation rule on the same windows.
+# NFCorpus only. Clean windows, the negative controls of #9/#15/#72, and F1 at 0.5 and 0.9.
+# Every FeatureDrift detector runs next to its `_perm` twin, so all 11 permutation variants
+# go through the runner. See experiments/permutation/README.md for how to run and read it.
+datasets: [nfcorpus]
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever:
+  revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256
+failures:
+  F1_partial_upgrade_minilm:
+    injector: F1_partial_upgrade
+    severities: [0.5, 0.9]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  F1_partial_upgrade_bge:
+    injector: F1_partial_upgrade
+    severities: [0.5, 0.9]
+    alt_model: BAAI/bge-small-en-v1.5
+    alt_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  # negative controls: harmless, so every alarm on them is a false alarm
+  H_mixed_truncation_512:
+    injector: H_mixed_truncation
+    severities: [0.1, 0.5, 0.9]
+    max_seq_length: 512
+  H_full_swap_minilm:
+    injector: H_full_swap
+    severities: [1.0]
+    alt_model: sentence-transformers/all-MiniLM-L6-v2
+    alt_revision: 1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+  H_full_swap_bge:
+    injector: H_full_swap
+    severities: [1.0]
+    alt_model: BAAI/bge-small-en-v1.5
+    alt_revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  # repeats queries of one topic, so its windows are not distinct queries: reported separately
+  H_query_topic_shift:
+    injector: H_query_topic_shift
+    severities: [0.1, 0.5, 0.9]
+    n_topics: 5
+    topic: 0
+detectors:
+  - ks_top1
+  - ks_gap
+  - ks_mean10
+  - ks_std10
+  - psi_top1
+  - psi_gap
+  - psi_mean10
+  - psi_std10
+  - qpp_max
+  - qpp_gap
+  - qpp_nqc
+  - ks_top1_perm      # 999 permutations, permutation seed 0 (the defaults)
+  - ks_gap_perm
+  - ks_mean10_perm
+  - ks_std10_perm
+  - psi_top1_perm
+  - psi_gap_perm
+  - psi_mean10_perm
+  - psi_std10_perm
+  - qpp_max_perm
+  - qpp_gap_perm
+  - qpp_nqc_perm
+window_size: 100
+trials: 20
+# calibration seeds 0-2 / evaluation seeds 3-5 (split A), and the reverse (split B)
+seeds: [0, 1, 2, 3, 4, 5]

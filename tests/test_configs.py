@@ -76,3 +76,10 @@ def test_dev_and_final_use_the_same_retriever():
         assert dev[key] == final[key], key
     assert runner.run_seeds(dev) == runner.run_seeds(final), "seeds"
     assert dev["retriever"]["max_seq_length"] == 256
+
+
+def test_dev_and_final_use_the_agreed_min_drop():
+    """The harmful label every held-out number is conditional on (#52); the held-out run
+    must label harm the same way the dev run does."""
+    dev, final = (load(CONFIGS[0].parent / f"{n}.yaml")[0] for n in ("dev", "final"))
+    assert dev["min_drop"] == final["min_drop"] == 0.02

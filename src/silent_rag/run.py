@@ -29,7 +29,7 @@ from silent_rag.types import Observation
 # filled in before anything reads the config, so run_id doesn't depend on whether a default was spelled out
 DEFAULTS = {"k": 10, "seed": 0, "alpha": 0.05, "min_drop": 0.0}
 
-DEV_DATASETS = {"nfcorpus"}
+DEV_DATASETS = {"nfcorpus", "mldr_en"}  # MLDR: long docs for F3 (#12), not held out
 HELD_OUT = {"scifact", "fiqa"}
 ALIASES = {"fiqa-2018": "fiqa"}
 
@@ -457,9 +457,17 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None, o
         hashed.pop("seed")
     rid = run_id(hashed)
     per_seed = {key: v for key, v in cfg.items() if key != "seeds"}
+    # load every dataset first: checks that need the data run before anything is embedded
+    loaded = {name: loader(name) for name in datasets}
+    for name, ds in loaded.items():
+        for label, (injector, sevs, kwargs) in failures.items():
+            try:
+                INJECTORS[injector].check_dataset(kwargs, sevs, ds)
+            except ValueError as e:
+                raise SystemExit(f"{label} on {name}: {e}") from None
     rows = []
     for name in datasets:
-        ds, retriever = loader(name), make_retriever()
+        ds, retriever = loaded[name], make_retriever()
         for seed in seeds:
             rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, failures, rid=rid)
     return to_frame(rows)
