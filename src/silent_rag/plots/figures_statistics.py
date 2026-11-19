@@ -26,6 +26,9 @@ FIGURE_DEFAULTS["share_of_significant_windows_vs_severity"] = {"min_drop": None,
 FIGURE_DEFAULTS["seconds_per_statistic"] = {"axes": {"log_x": True}}
 FIGURE_DEFAULTS["auroc_vs_severity"] = {"statistic": None, "min_drop": None, "negatives": "unmodified"}
 FIGURE_DEFAULTS["auroc_vs_min_ndcg10_drop"] = {"statistic": None, "negatives": "unmodified"}
+FIGURE_DEFAULTS["spearman_vs_severity"] = {"statistic": None, "show_pooled": True}
+AUROC_YLABEL = "AUROC (windows with a significant drop\nvs {} windows)"  # {} = the negatives' display name
+POOLED = "◆ all severities pooled"
 RANGE_BAND = "shaded: range over seeds (not a CI)"
 SEVERITY_TEXT = "Severity (fraction of document vectors replaced)"
 
@@ -227,8 +230,7 @@ def auroc_vs_severity(auroc, *, statistic=None, min_drop=None, negatives=None, m
             band_legend_entry(ax, settings, f"shaded: {ci_text}")
         ax.set_xlim(0, float(table["severity"].max()) * 1.02)
         ax.set_ylim(-0.02, 1.02)  # AUROC 0 and 1 stay off the frame
-        finish_axes(ax, settings, xlabel=SEVERITY_TEXT,
-                    ylabel=f"AUROC (windows with a significant drop\nvs {negatives_name} windows)",
+        finish_axes(ax, settings, xlabel=SEVERITY_TEXT, ylabel=AUROC_YLABEL.format(negatives_name),
                     title=f"{statistic_name}:\nAUROC by severity, minimum mean drop {min_drop:g}")
         nan_note(ax, table, "auroc", settings)
     return fig
@@ -270,7 +272,75 @@ def auroc_vs_min_ndcg10_drop(auroc, *, statistic=None, negatives=None, models=No
             band_legend_entry(ax, settings, f"shaded: {ci_text}")
         ax.set_ylim(-0.02, 1.02)  # AUROC 0 and 1 stay off the frame
         finish_axes(ax, settings, xlabel="Minimum mean nDCG@10 drop for a significant window",
-                    ylabel=f"AUROC (windows with a significant drop\nvs {negatives_name} windows)",
+                    ylabel=AUROC_YLABEL.format(negatives_name),
                     title=f"{statistic_name}:\nAUROC by minimum mean drop, all severities pooled")
         nan_note(ax, table, "auroc", settings)
+    return fig
+
+
+def spearman_vs_severity(spearman, *, statistic=None, show_pooled=None, models=None, style=None, ax=None, **shared):
+    """Spearman correlation between one monitoring statistic and the window's mean nDCG@10 drop,
+    vs severity, one line per label, from table 6 (spearman_statistic_vs_window_mean_ndcg10_drop).
+    Per severity, rho shows how well the statistic tracks the drop at a fixed dose; the pooled
+    value (all severities together) also contains the statistic's response to severity, so it is
+    drawn apart: a diamond per label with error bars at an extra x position labelled "pooled",
+    labels nudged sideways, not joined to the lines (show_pooled=False leaves it out). Band and
+    error bars are the seed-cluster 95% CI (whole seeds resampled: variability across random
+    seeds over the same test questions, not question-level sampling uncertainty).
+
+    statistic is required. include keeps the pooled rows (they have no severity). Undefined values
+    and missing intervals are counted, with their reasons, in a note under the axes. A reference
+    line marks rho = 0. The y-axis runs from -1.05 to 1.05 unless axes.ylim is set. models
+    (table 16) only sets the label order. Raises if the statistic is missing or not in the table,
+    or if include leaves no rows.
+    """
+    name = "spearman_vs_severity"
+    settings = (style or PlotStyle.default()).resolve(name, statistic=statistic, show_pooled=show_pooled, **shared)
+    statistic, available = settings["statistic"], sorted(spearman["statistic"].unique())
+    if statistic not in available:
+        given = "no statistic given" if statistic is None else f"statistic {statistic!r} is not in the table"
+        raise ValueError(f"{name}: {given}; choose one of {available}")
+    one = spearman[spearman["statistic"].eq(statistic)]
+    table = filter_include(one, settings)
+    require_rows(one, table, settings, name)
+    pooled = table["pooled"].astype(bool)
+    per_severity, pooled_rows = table[~pooled], table[pooled] if settings["show_pooled"] else table.iloc[:0]
+    table = table[~pooled | settings["show_pooled"]]
+    labels = label_order(table["failure"], settings, models)
+    statistic_name = display_name("statistic", statistic, settings)
+    severities = np.sort(per_severity["severity"].unique())
+    step = float(np.diff(severities).min()) if len(severities) > 1 else 0.1
+    x_pooled = (float(severities[-1]) if len(severities) else 0.0) + step
+    lines = settings["lines"]
+
+    with style_context(settings):
+        fig, ax = figure_axes(settings, ax)
+        for i, label in enumerate(labels):
+            color, text = color_for(label, settings, labels), display_name("label", label, settings)
+            rows = per_severity[per_severity["failure"].eq(label)].sort_values("severity")
+            if len(rows):
+                line_with_band(ax, rows["severity"], rows["rho"], settings, color=color, label=text,
+                               low=rows["ci_low"], high=rows["ci_high"])
+            for _, row in pooled_rows[pooled_rows["failure"].eq(label)].iterrows():
+                x = x_pooled + (i - (len(labels) - 1) / 2) * 0.3 * step / max(len(labels) - 1, 1)
+                ax.errorbar(x, row["rho"], yerr=[[row["rho"] - row["ci_low"]], [row["ci_high"] - row["rho"]]],
+                            fmt="D", color=color, markersize=lines["marker_size"], elinewidth=lines["width"],
+                            capsize=lines["marker_size"] / 2, label="_nolegend_")
+        reference_line(ax, settings, label="Spearman ρ = 0", y=0)
+        ci_text = _seed_ci_text(per_severity)
+        if ci_text is not None:
+            band_legend_entry(ax, settings, f"shaded: {ci_text}")
+        if len(pooled_rows):
+            pooled_text = _seed_ci_text(pooled_rows)
+            ax.errorbar([np.nan], [np.nan], yerr=[[np.nan], [np.nan]], fmt="D", color=settings["colors"]["reference_grey"],
+                        markersize=lines["marker_size"], elinewidth=lines["width"],
+                        label=POOLED if pooled_text is None else f"{POOLED}; error bars: {pooled_text}")
+            ax.set_xticks([*severities, x_pooled], [f"{s:g}" for s in severities] + ["pooled"])
+            ax.set_xlim(0, x_pooled + step / 2)
+        elif len(severities):
+            ax.set_xlim(0, float(severities[-1]) * 1.02)
+        ax.set_ylim(-1.05, 1.05)  # rho -1 and 1 stay off the frame
+        finish_axes(ax, settings, xlabel=SEVERITY_TEXT, ylabel="Spearman ρ",
+                    title=f"{statistic_name}:\nSpearman ρ with the window's mean nDCG@10 drop")
+        nan_note(ax, table, "rho", settings)
     return fig

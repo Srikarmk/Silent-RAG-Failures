@@ -1,4 +1,5 @@
 import matplotlib
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -11,6 +12,7 @@ from silent_rag.plots.figures_statistics import (  # noqa: E402
     auroc_vs_min_ndcg10_drop,
     auroc_vs_severity,
     seconds_per_statistic,
+    spearman_vs_severity,
     share_of_significant_windows_vs_severity,
     statistic_vs_severity_all_test_questions,
 )
@@ -341,3 +343,79 @@ def test_by_drop_errors():
         by_drop_fig(statistic="ks")
     with pytest.raises(ValueError, match=r"^auroc_vs_min_ndcg10_drop: no rows to plot after include"):
         by_drop_fig(include={"min_drops": [0.5]})
+
+
+# table 6 (spearman_statistic_vs_window_mean_ndcg10_drop): per-severity rows plus one pooled row (severity NaN)
+def srow(failure, severity, rho, low, high, n_seeds=10, note="", statistic="s1"):
+    return dict(failure=failure, severity=severity, pooled=bool(np.isnan(severity)), rho=rho, ci_low=low,
+                ci_high=high, n_windows=200, n_seeds=n_seeds, note=note, statistic=statistic)
+
+
+SPEARMAN = pd.DataFrame([
+    srow("m_a", 0.5, 0.2, 0.1, 0.3), srow("m_a", 1.0, 0.4, NAN, NAN, note="no CI: fewer than two seeds"),
+    srow("m_b", 0.5, 0.3, 0.2, 0.4), srow("m_b", 1.0, 0.5, 0.4, 0.6),
+    srow("m_a", NAN, 0.6, 0.5, 0.7), srow("m_b", NAN, 0.7, 0.6, 0.8, n_seeds=8),
+    srow("m_a", 0.5, -0.1, -0.2, 0.0, statistic="s2")])
+POOLED_ENTRY = "◆ all severities pooled; error bars: 95% CI over 8–10 random seeds (whole seeds resampled)"
+
+
+def spearman_fig(table=SPEARMAN, statistic="s1", **kwargs):
+    return spearman_vs_severity(table, statistic=statistic, **kwargs)
+
+
+def marked(ax, marker):
+    """[(x, y)] of the data points drawn with this marker ("o": per-severity lines, "D": pooled)."""
+    return [(x, y) for line in ax.lines if line.get_marker() == marker and line.get_zorder() != 1
+            for x, y in zip(line.get_xdata(), line.get_ydata()) if not np.isnan(y)]
+
+
+def test_spearman_returns_a_figure_without_pyplot_or_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    plt.close("all")
+    fig = spearman_fig()
+    assert isinstance(fig, Figure) and len(fig.axes) == 1
+    assert plt.get_fignums() == [] and list(tmp_path.iterdir()) == []
+
+
+def test_spearman_lines_per_severity_and_pooled_diamonds_apart():
+    ax = spearman_fig().axes[0]
+    lines = {line.get_label(): list(line.get_ydata()) for line in ax.lines if line.get_marker() == "o"}
+    assert lines == {"m_a": [0.2, 0.4], "m_b": [0.3, 0.5]}  # pooled rows not on the lines
+    pooled = marked(ax, "D")
+    assert sorted(y for _, y in pooled) == [0.6, 0.7] and len({x for x, _ in pooled}) == 2  # nudged apart
+    assert sorted(x for x, _ in pooled) == pytest.approx([1.425, 1.575])  # slot 1.0 + step 0.5, nudged ±0.3·step/2
+    ticks = dict(zip([t.get_text() for t in ax.get_xticklabels()], ax.get_xticks()))
+    assert ticks["pooled"] == pytest.approx(1.5) and ax.get_xlim() == (0, pytest.approx(1.75))
+    assert ax.get_legend_handles_labels()[1] == ["m_a", "m_b", "Spearman ρ = 0", SEED_BAND.format(10), POOLED_ENTRY]
+    assert reference_ys(ax) == [0] and ax.get_ylim() == (-1.05, 1.05)
+    (note,) = ax.texts
+    assert " ".join(note.get_text().split()) == "1 interval not shown: no CI: fewer than two seeds (1)"
+
+
+def test_spearman_show_pooled_false_and_from_yaml():
+    s = PlotStyle({"figures": {"spearman_vs_severity": {"statistic": "s1", "show_pooled": False}}})
+    for ax in (spearman_fig(show_pooled=False).axes[0], spearman_vs_severity(SPEARMAN, style=s).axes[0]):
+        assert not marked(ax, "D") and "pooled" not in [t.get_text() for t in ax.get_xticklabels()]
+        assert not any("pooled" in label for label in ax.get_legend_handles_labels()[1])
+        assert ax.get_xlim() == (0, pytest.approx(1.02))
+
+
+def test_spearman_pooled_entry_without_intervals_include_and_ylim():
+    no_ci = SPEARMAN.assign(ci_low=np.where(SPEARMAN["pooled"], NAN, SPEARMAN["ci_low"]))
+    assert "◆ all severities pooled" in spearman_fig(no_ci).axes[0].get_legend_handles_labels()[1]
+    ax = spearman_fig(include={"severities": [1.0]}).axes[0]
+    assert sorted(y for _, y in marked(ax, "D")) == [0.6, 0.7]  # pooled rows kept by include
+    assert spearman_fig(ylim=[0, 1]).axes[0].get_ylim() == (0, 1)
+
+
+def test_spearman_models_ax_and_errors():
+    lines = [line.get_label() for line in spearman_fig(models=MODELS).axes[0].lines if line.get_marker() == "o"]
+    assert lines == ["m_b", "m_a"]
+    fig, axes = new_figure(PlotStyle.default().resolve("grid"), ncols=2)
+    assert spearman_fig(ax=axes[1], legend={"show": False}) is fig and axes[1].lines and not axes[0].lines
+    with pytest.raises(ValueError, match=r"^spearman_vs_severity: no statistic given; choose one of \['s1', 's2'\]"):
+        spearman_fig(statistic=None)
+    with pytest.raises(ValueError, match=r"statistic 'ks' is not in the table"):
+        spearman_fig(statistic="ks")
+    with pytest.raises(ValueError, match=r"^spearman_vs_severity: no rows to plot after include"):
+        spearman_fig(include={"labels": ["m_z"]})
