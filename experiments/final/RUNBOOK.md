@@ -38,3 +38,9 @@ SciFact skips table 10: it has no validation split to fit the statistics on.
 
 For each dataset: check `manifest.json` (version 2, commit_changed_during_run false, no
 uncommitted paths), copy it to `experiments/analysis_f1/manifests/`, add a README row, commit.
+
+## Timing note
+
+No SciFact or FiQA embeddings are cached (checked 2026-11-19): the first run embeds both corpora with
+the baseline and both replacement models (3 x 62,821 documents; FiQA is most of it). Expect embedding to
+dominate the runner's time; later runs on the same configs reuse the cache.
