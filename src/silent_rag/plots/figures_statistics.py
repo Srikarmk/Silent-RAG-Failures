@@ -25,6 +25,7 @@ FIGURE_DEFAULTS["statistic_vs_severity_all_test_questions"] = {"statistic": None
 FIGURE_DEFAULTS["share_of_significant_windows_vs_severity"] = {"min_drop": None, "annotate_ends": True}
 FIGURE_DEFAULTS["seconds_per_statistic"] = {"axes": {"log_x": True}}
 FIGURE_DEFAULTS["auroc_vs_severity"] = {"statistic": None, "min_drop": None, "negatives": "unmodified"}
+FIGURE_DEFAULTS["auroc_vs_min_ndcg10_drop"] = {"statistic": None, "negatives": "unmodified"}
 RANGE_BAND = "shaded: range over seeds (not a CI)"
 SEVERITY_TEXT = "Severity (fraction of document vectors replaced)"
 
@@ -229,5 +230,47 @@ def auroc_vs_severity(auroc, *, statistic=None, min_drop=None, negatives=None, m
         finish_axes(ax, settings, xlabel=SEVERITY_TEXT,
                     ylabel=f"AUROC (windows with a significant drop\nvs {negatives_name} windows)",
                     title=f"{statistic_name}:\nAUROC by severity, minimum mean drop {min_drop:g}")
+        nan_note(ax, table, "auroc", settings)
+    return fig
+
+
+def auroc_vs_min_ndcg10_drop(auroc, *, statistic=None, negatives=None, models=None, style=None, ax=None, **shared):
+    """AUROC of one monitoring statistic vs the minimum mean nDCG@10 drop a window needs to count
+    as significant, one line per label with all severities pooled, from table 5
+    (auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop). Pooling weights severities
+    by their number of significant windows. The band is the seed-cluster 95% CI (whole seeds
+    resampled: variability across random seeds over the same test questions, not question-level
+    sampling uncertainty).
+
+    statistic is required; negatives defaults to "unmodified". include.min_drops limits the
+    x-axis. Undefined AUROCs and missing intervals are left as gaps and counted, with their
+    reasons, in a note under the axes. A reference line marks AUROC 0.5. The y-axis runs from 0
+    to 1 unless axes.ylim is set. models (table 16) only sets the label order. Raises if a
+    selector is missing or not in the table, or if include leaves no rows.
+    """
+    name = "auroc_vs_min_ndcg10_drop"
+    settings = (style or PlotStyle.default()).resolve(name, statistic=statistic, negatives=negatives, **shared)
+    chosen = _auroc_rows(auroc, name, settings)
+    table = filter_include(chosen, settings)
+    require_rows(chosen, table, settings, name)
+    labels = label_order(table["failure"], settings, models)
+    statistic_name = display_name("statistic", settings["statistic"], settings)
+    negatives_name = display_name("negatives", settings["negatives"], settings)
+
+    with style_context(settings):
+        fig, ax = figure_axes(settings, ax)
+        for label in labels:
+            rows = table[table["failure"].eq(label)].sort_values("min_mean_ndcg10_drop")
+            line_with_band(ax, rows["min_mean_ndcg10_drop"], rows["auroc"], settings,
+                           color=color_for(label, settings, labels), label=display_name("label", label, settings),
+                           low=rows["ci_low"], high=rows["ci_high"])
+        reference_line(ax, settings, label="AUROC 0.5", y=0.5)
+        ci_text = _seed_ci_text(table)
+        if ci_text is not None:
+            band_legend_entry(ax, settings, f"shaded: {ci_text}")
+        ax.set_ylim(-0.02, 1.02)  # AUROC 0 and 1 stay off the frame
+        finish_axes(ax, settings, xlabel="Minimum mean nDCG@10 drop for a significant window",
+                    ylabel=f"AUROC (windows with a significant drop\nvs {negatives_name} windows)",
+                    title=f"{statistic_name}:\nAUROC by minimum mean drop, all severities pooled")
         nan_note(ax, table, "auroc", settings)
     return fig

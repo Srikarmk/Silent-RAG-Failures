@@ -8,6 +8,7 @@ from matplotlib.figure import Figure  # noqa: E402
 
 from silent_rag.plots.figures_statistics import (  # noqa: E402
     RANGE_BAND,
+    auroc_vs_min_ndcg10_drop,
     auroc_vs_severity,
     seconds_per_statistic,
     share_of_significant_windows_vs_severity,
@@ -281,3 +282,62 @@ def test_auroc_errors():
         auroc_fig(min_drop=0.06)
     with pytest.raises(ValueError, match=r"^auroc_vs_severity: no rows to plot after include"):
         auroc_fig(include={"labels": ["m_z"]})
+
+
+# table 5 (auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop): all severities pooled, no severity column
+def mrow(failure, min_drop, auroc, low, high, note="", statistic="s1", negatives="unmodified"):
+    return {k: v for k, v in arow(failure, NAN, auroc, low, high, note=note, min_drop=min_drop,
+                                  statistic=statistic, negatives=negatives).items() if k != "severity"}
+
+
+BY_DROP = pd.DataFrame([
+    mrow("m_a", 0.02, 0.8, 0.7, 0.9), mrow("m_a", 0.0, 0.9, 0.85, 0.95),  # out of order on purpose
+    mrow("m_a", 0.04, 0.7, NAN, NAN, note="no CI: one seed"),
+    mrow("m_b", 0.0, 0.95, 0.9, 1.0), mrow("m_b", 0.02, 0.85, 0.8, 0.9), mrow("m_b", 0.04, 0.75, 0.6, 0.85),
+    mrow("m_a", 0.0, 0.3, 0.2, 0.4, statistic="s2"), mrow("m_a", 0.0, 0.99, 0.98, 1.0, negatives="with_controls")])
+
+
+def by_drop_fig(table=BY_DROP, statistic="s1", **kwargs):
+    return auroc_vs_min_ndcg10_drop(table, statistic=statistic, **kwargs)
+
+
+def test_by_drop_returns_a_figure_without_pyplot_or_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    plt.close("all")
+    fig = by_drop_fig()
+    assert isinstance(fig, Figure) and len(fig.axes) == 1
+    assert plt.get_fignums() == [] and list(tmp_path.iterdir()) == []
+
+
+def test_by_drop_points_in_min_drop_order_with_the_half_line_band_and_interval_note():
+    ax = by_drop_fig().axes[0]
+    assert series(ax) == {"m_a": ([0.0, 0.02, 0.04], [0.9, 0.8, 0.7]), "m_b": ([0.0, 0.02, 0.04], [0.95, 0.85, 0.75])}
+    assert reference_ys(ax) == [0.5] and ax.get_ylim() == (-0.02, 1.02)
+    assert ax.get_legend_handles_labels()[1] == ["m_a", "m_b", "AUROC 0.5", SEED_BAND.format(10)]
+    assert "all severities pooled" in ax.get_title() and "Minimum mean nDCG@10 drop" in ax.get_xlabel()
+    (note,) = ax.texts
+    assert " ".join(note.get_text().split()) == "1 interval not shown: no CI: one seed (1)"
+
+
+def test_by_drop_include_min_drops_limits_the_x_axis():
+    ax = by_drop_fig(include={"min_drops": [0.0, 0.02 + 1e-12]}).axes[0]  # matched with isclose
+    assert {label: xs for label, (xs, _) in series(ax).items()} == {"m_a": [0.0, 0.02], "m_b": [0.0, 0.02]}
+    assert not ax.texts  # the row without an interval is not plotted, so no note
+
+
+def test_by_drop_yaml_negatives_models_and_ax():
+    s = PlotStyle({"figures": {"auroc_vs_min_ndcg10_drop": {"statistic": "s1", "negatives": "with_controls"}}})
+    assert series(auroc_vs_min_ndcg10_drop(BY_DROP, style=s).axes[0]) == {"m_a": ([0.0], [0.99])}
+    lines = [line for line in by_drop_fig(models=MODELS).axes[0].lines if line.get_zorder() != 1]
+    assert [line.get_label() for line in lines] == ["m_b", "m_a"]
+    fig, axes = new_figure(PlotStyle.default().resolve("grid"), ncols=2)
+    assert by_drop_fig(ax=axes[0], legend={"show": False}) is fig and axes[0].lines and not axes[1].lines
+
+
+def test_by_drop_errors():
+    with pytest.raises(ValueError, match=r"^auroc_vs_min_ndcg10_drop: no statistic given; choose one of \['s1', 's2'\]"):
+        by_drop_fig(statistic=None)
+    with pytest.raises(ValueError, match=r"statistic 'ks' is not in the table"):
+        by_drop_fig(statistic="ks")
+    with pytest.raises(ValueError, match=r"^auroc_vs_min_ndcg10_drop: no rows to plot after include"):
+        by_drop_fig(include={"min_drops": [0.5]})
