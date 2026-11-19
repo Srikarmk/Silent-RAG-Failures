@@ -15,11 +15,12 @@ from silent_rag.plots.figures_models import (  # noqa: E402
 from silent_rag.plots.style import PALETTES, PlotStyle, new_figure  # noqa: E402
 
 BASE = 0.3
-# table 9 (mean_ndcg10_drop_all_test_questions_by_severity), alphabetical as the analysis writes it
+# table 9 (mean_ndcg10_drop_all_test_questions_by_severity) as the analysis writes it: clean row first, then alphabetical
 DROPS = pd.DataFrame({
-    "failure": ["m_a", "m_a", "m_b", "m_b"], "injector": "F1_partial_upgrade", "severity": [0.5, 1.0, 0.5, 1.0],
-    "mean_ndcg10_drop": [0.02, 0.05, 0.06, 0.12], "ci_low": [0.01, 0.04, 0.05, 0.10],
-    "ci_high": [0.03, 0.06, 0.07, 0.14], "n_questions": 323, "n_seeds": 10, "baseline_ndcg10": BASE,
+    "failure": ["clean", "m_a", "m_a", "m_b", "m_b"], "injector": [None] + ["F1_partial_upgrade"] * 4,
+    "severity": [0.0, 0.5, 1.0, 0.5, 1.0], "mean_ndcg10_drop": [0.0, 0.02, 0.05, 0.06, 0.12],
+    "ci_low": [0.0, 0.01, 0.04, 0.05, 0.10], "ci_high": [0.0, 0.03, 0.06, 0.07, 0.14], "n_questions": 323,
+    "n_seeds": [0, 10, 10, 10, 10], "baseline_ndcg10": BASE,
 })
 MODELS = pd.DataFrame({"label": ["m_a", "m_b"], "mean_cosine": [0.80, 0.95]})  # m_b more similar: drawn first
 BAND = "shaded: 95% CI over questions"
@@ -63,7 +64,7 @@ def band_bounds(fig, i):
     ("percent_of_baseline", 100.0, 100.0, (100 * (BASE - 0.06) / BASE, 100 * (BASE - 0.04) / BASE)),
 ])
 def test_scales_convert_line_and_band_and_leave_severity_0_without_a_band(scale, y0, x_end, band_at_end):
-    one = DROPS[DROPS["failure"].eq("m_a") & DROPS["severity"].eq(1.0)]
+    one = DROPS[(DROPS["failure"].eq("m_a") & DROPS["severity"].eq(1.0)) | DROPS["failure"].eq("clean")]
     fig = dose(one, scale=scale, annotate_ends=False)
     line = series(fig, "m_a")
     assert line.get_xdata()[0] == 0.0 and line.get_ydata()[0] == pytest.approx(y0) and line.get_xdata()[-1] == x_end
@@ -130,6 +131,30 @@ def test_no_rows_after_include_raises_naming_the_settings():
         dose(include={"labels": ["m_z"], "severities": [0.5]})
     with pytest.raises(ValueError, match="the table has no rows"):
         dose(DROPS.iloc[:0])
+
+
+def test_the_severity_0_point_is_read_from_the_clean_row():
+    marked = DROPS.assign(mean_ndcg10_drop=np.where(DROPS["failure"].eq("clean"), 0.001, DROPS["mean_ndcg10_drop"]))
+    for scale, y0 in (("drop", 0.001), ("ndcg", BASE - 0.001)):  # not 0: the value comes from the table
+        lines = series(dose(marked, scale=scale, annotate_ends=False))
+        assert [(line.get_xdata()[0], line.get_ydata()[0]) for line in lines] == [(0.0, pytest.approx(y0))] * 2
+    assert "clean" not in [line.get_label() for line in series(dose(annotate_ends=False))]  # never drawn as a label
+
+
+def test_clean_row_is_read_before_include_and_a_missing_one_raises():
+    a = series(dose(include={"severities": [1.0]}, annotate_ends=False), "m_a")
+    assert list(a.get_xdata()) == [0.0, 1.0] and list(a.get_ydata()) == pytest.approx([0.0, 0.05])
+    with pytest.raises(ValueError, match=r"^dose_response_ndcg10_drop: expected one clean row, got 0$"):
+        dose(DROPS[DROPS["failure"].ne("clean")])
+
+
+def test_a_label_with_its_own_severity_0_row_starts_there():
+    own = pd.concat([DROPS, DROPS.iloc[[1]].assign(severity=0.0, mean_ndcg10_drop=0.003, ci_low=0.001, ci_high=0.005)])
+    fig = dose(own, annotate_ends=False)
+    a, b = series(fig, "m_a"), series(fig, "m_b")
+    assert list(a.get_xdata()) == [0.0, 0.5, 1.0] and a.get_ydata()[0] == pytest.approx(0.003)  # one point at 0
+    assert b.get_xdata()[0] == 0.0 and b.get_ydata()[0] == 0.0  # m_b still starts at the clean row
+    assert band_bounds(fig, 0)[0] == 0.0 and band_bounds(fig, 1)[0] == 0.5  # m_a's own row has an interval
 
 
 def test_unknown_scale_and_varying_baseline_raise():
@@ -267,3 +292,11 @@ def test_drop_at_severity_lists_labels_missing_a_severity_or_a_mean_cosine():
         at_severity(models=TABLE16[TABLE16["label"].eq("m_b")], severity=0.7)
     with pytest.raises(ValueError, match=r"^ndcg10_drop_at_severity_vs_mean_cosine: no rows to plot after include"):
         at_severity(include={"labels": ["m_z"]})
+
+
+def test_drop_at_severity_ignores_the_clean_row():
+    with_clean, without = at_severity().axes[0], at_severity(DROPS[DROPS["failure"].ne("clean")]).axes[0]
+    assert points(with_clean) == points(without) and "clean" not in {t.get_text() for t in with_clean.texts}
+    assert with_clean.get_legend_handles_labels()[1] == without.get_legend_handles_labels()[1]
+    with pytest.raises(ValueError, match=r"severity 0: \['m_b', 'm_a'\]; .*table 16: \[\]$"):  # clean is not listed
+        at_severity(severity=0.0)
