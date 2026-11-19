@@ -19,6 +19,37 @@ from silent_rag.types import RetrievalState
 PREFIX_MODELS = ("intfloat/e5-", "intfloat/multilingual-e5-")
 
 
+def check_alt_model(params: dict, run_cfg: dict, who: str) -> None:
+    """Checks for an injector that encodes with a second model given as alt_model/alt_revision.
+    `who` names the injector in the messages."""
+    # binding already guaranteed both keys are present
+    alt_model, alt_revision = params["alt_model"], params["alt_revision"]
+    if not isinstance(alt_model, str) or not alt_model.strip():
+        raise ValueError(f"alt_model must be a non-empty model name, got {alt_model!r}")
+    # lowercase only: the revision goes into the cache key, so one commit gets one spelling
+    if not is_commit_hash(alt_revision):
+        raise ValueError(f"alt_revision must be a 40-character lowercase commit hash, got {alt_revision!r}")
+    # any revision: the clean revision may be unpinned, and a new revision of one model often has the same weights
+    if alt_model.strip().casefold() == run_cfg["model"].strip().casefold():
+        raise ValueError(f"alt_model {alt_model!r} is the clean model; {who} needs a different model, whatever the revision")
+    if alt_model.strip().casefold().startswith(PREFIX_MODELS):
+        raise ValueError(f"alt_model {alt_model!r} needs a document prefix (e.g. 'passage: '), which {who} doesn't add")
+
+
+def like(retriever_cls, retriever, model: str | None = None, **changes):
+    """A retriever with the clean retriever's settings except `model` and `changes`. A new
+    instance, not the clean one's encoder, so a changed model or length really is used."""
+    settings = dict(
+        normalize=retriever.normalize,
+        query_prefix=retriever.query_prefix,
+        max_seq_length=retriever.max_seq_length,
+        revision=retriever.revision,
+        batch_size=retriever.batch_size,
+        device=retriever.device,
+    )
+    return retriever_cls(model or retriever.model, **{**settings, **changes})
+
+
 @register
 class PartialUpgrade(Injector):
     name = "F1_partial_upgrade"
@@ -30,30 +61,11 @@ class PartialUpgrade(Injector):
 
     @classmethod
     def check_config(cls, params: dict, run_cfg: dict) -> None:
-        # binding already guaranteed both keys are present
-        alt_model, alt_revision = params["alt_model"], params["alt_revision"]
-        if not isinstance(alt_model, str) or not alt_model.strip():
-            raise ValueError(f"alt_model must be a non-empty model name, got {alt_model!r}")
-        # lowercase only: the revision goes into the cache key, so one commit gets one spelling
-        if not is_commit_hash(alt_revision):
-            raise ValueError(f"alt_revision must be a 40-character lowercase commit hash, got {alt_revision!r}")
-        # any revision: the clean revision may be unpinned, and a new revision of one model often has the same weights
-        if alt_model.strip().casefold() == run_cfg["model"].strip().casefold():
-            raise ValueError(f"alt_model {alt_model!r} is the clean model; F1 needs a different model, whatever the revision")
-        if alt_model.strip().casefold().startswith(PREFIX_MODELS):
-            raise ValueError(f"alt_model {alt_model!r} needs a document prefix (e.g. 'passage: '), which F1 doesn't add")
+        check_alt_model(params, run_cfg, "F1")
 
     def attach(self, retriever, state: RetrievalState) -> None:
-        # same settings as the clean retriever, only the model changes; not its encoder, that's the clean model
-        alt = self.retriever_cls(
-            self.alt_model,
-            normalize=retriever.normalize,
-            query_prefix=retriever.query_prefix,
-            max_seq_length=retriever.max_seq_length,
-            revision=self.alt_revision,
-            batch_size=retriever.batch_size,
-            device=retriever.device,
-        )
+        # same settings as the clean retriever, only the model changes
+        alt = like(self.retriever_cls, retriever, self.alt_model, revision=self.alt_revision)
         vecs, _ = alt.embed_texts("f1_alt", state.doc_ids, state.doc_texts)
         if vecs.shape[1] != state.doc_embeddings.shape[1]:
             raise ValueError(

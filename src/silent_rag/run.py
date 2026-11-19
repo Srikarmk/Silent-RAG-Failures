@@ -33,7 +33,7 @@ from silent_rag.types import Observation
 # filled in before anything reads the config, so run_id doesn't depend on whether a default was spelled out
 DEFAULTS = {"k": 10, "seed": 0, "alpha": 0.05, "min_drop": 0.0}
 
-DEV_DATASETS = {"nfcorpus"}
+DEV_DATASETS = {"nfcorpus", "mldr_en"}  # MLDR: long docs for F3 (#12), not held out
 HELD_OUT = {"scifact", "fiqa"}
 ALIASES = {"fiqa-2018": "fiqa"}
 
@@ -211,6 +211,9 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
         if key in others:
             raise SystemExit(f"{label}: is the registered name of {others[key]!r}, pick another label")
         check_severities({label: sevs})
+        allowed = INJECTORS[name].severities
+        if allowed is not None and any(s not in allowed for s in sevs):
+            raise SystemExit(f"{label}: {name} only runs at severities {list(allowed)}, got {sevs}")
         # bind, don't construct: the runner makes exactly one injector per label, later
         try:
             inspect.signature(INJECTORS[name]).bind(**params)
@@ -273,6 +276,36 @@ def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
             "injector changed query_texts but kept the clean query_embeddings, set them to None"
         )
     return damaged.query_embeddings[idx]
+
+
+def asked_queries(clean, damaged, idx, reference_ids: set[str]) -> list[str]:
+    """The query id at each window position after the injector ran.
+
+    An injector that shifts traffic (a query shift, a control that oversamples a topic)
+    may put another query of the dataset at a position, with its text. Ground truth then
+    pairs the question actually asked with its own clean result. A question from outside
+    the dataset has no clean result and no qrels, which is the open reference-standard
+    question in #13, so it is refused rather than scored against the wrong question.
+    """
+    clean_text = dict(zip(clean.query_ids, clean.query_texts))
+    asked = [damaged.query_ids[i] for i in idx]
+    unknown = sorted({q for q in asked if q not in clean_text})
+    if unknown:
+        raise RuntimeError(
+            f"injector asked {len(unknown)} queries that aren't in the dataset (e.g. {unknown[0]!r}); "
+            "they have no qrels, so there is no ground truth for them yet (#13)"
+        )
+    leaked = sorted(set(asked) & reference_ids)
+    if leaked:
+        raise RuntimeError(
+            f"injector asked {len(leaked)} reference-window queries (e.g. {leaked[0]!r}); "
+            "use the ids in Injector.query_pool, the detectors were fit on the others"
+        )
+    wrong = [i for i in idx if damaged.query_texts[i] != clean_text[damaged.query_ids[i]]]
+    if wrong:
+        i = wrong[0]
+        raise RuntimeError(f"position {i} has query id {damaged.query_ids[i]!r} but another query's text")
+    return asked
 
 
 def read_only(state):
@@ -348,10 +381,12 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
 
     clean_deep = deep(state, clean_q)
     clean_ndcg = per_query_ndcg(clean_ids, state.query_ids, ds.qrels, k)
+    clean_by_id = dict(zip(state.query_ids, clean_ndcg))
 
     # The reference window the detectors are fit on never overlaps the windows they score.
     order = np.random.default_rng(seed).permutation(len(state.query_ids))
     ref_idx, pool = order[:window_size], order[window_size:]
+    ref_ids = {state.query_ids[i] for i in ref_idx}
     if len(pool) < window_size:
         raise SystemExit(f"{ds.name}: {len(order)} queries is too few for two windows of {window_size}")
 
@@ -369,6 +404,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
     made = {}
     for label, (name, _, kwargs) in failures.items():
         made[label] = INJECTORS[name](**kwargs)
+        # the queries an injector may move traffic to: never the reference window's
+        made[label].query_pool = [state.query_ids[i] for i in pool]
         made[label].attach(retriever, state)
 
     conditions = [("clean", 0.0)] + [(f, s) for f, (_, sevs, _) in failures.items() for s in sevs]
@@ -392,9 +429,10 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                 )
                 deep_scores = deep(damaged, q_emb)
 
-            # qrels are keyed by the clean query ids. What this means for F4 is still open (#13).
-            ndcg = per_query_ndcg(topk_ids, [state.query_ids[i] for i in idx], ds.qrels, k)
-            drop, p = paired_bootstrap(clean_ndcg[idx], ndcg, seed=trial)
+            # ground truth pairs each question actually asked with its own clean result (#13)
+            asked = asked_queries(state, damaged, idx, ref_ids)
+            ndcg = per_query_ndcg(topk_ids, asked, ds.qrels, k)
+            drop, p = paired_bootstrap(np.array([clean_by_id[q] for q in asked]), ndcg, seed=trial)
             window = observe(
                 damaged, idx, topk_ids, topk_scores, q_emb, docs_of(damaged, state, clean_docs), deep_scores
             )
@@ -402,6 +440,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
             for name, det in fitted.items():
                 start = time.perf_counter()
                 score = det.score(window)
+                wall = time.perf_counter() - start
+                uncached = getattr(det, "last_cost_s", None)
                 rows.append(
                     ResultRow(
                         run_id=rid,
@@ -419,7 +459,9 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                         ndcg_drop=drop,
                         harmful=p < alpha and drop >= min_drop,
                         p_value=p,
-                        cost_s=time.perf_counter() - start,
+                        cost_s=wall if uncached is None else float(uncached),
+                        # API-based detectors report what this check would cost uncached
+                        cost_usd=float(getattr(det, "last_cost_usd", 0.0)),
                     )
                 )
     return rows
@@ -440,9 +482,16 @@ def run_seeds(cfg: dict) -> list[int]:
     return seeds
 
 
-def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
+def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None, only_seeds=None):
+    """only_seeds runs a subset of the config's seeds under the full config's run_id, so
+    parts run in separate processes merge into one run (merge_parts)."""
     datasets = check_datasets(cfg["datasets"], final)
     seeds = run_seeds(cfg)
+    if only_seeds is not None:
+        extra = sorted(set(only_seeds) - set(seeds))
+        if extra or not only_seeds:
+            raise SystemExit(f"only_seeds must be a non-empty subset of the config's seeds {seeds}, got {only_seeds}")
+        seeds = [s for s in seeds if s in set(only_seeds)]
     load_plugins()
     failures = failure_params(cfg.get("failures"))
     params = detector_params(cfg["detectors"])
@@ -464,9 +513,17 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
         hashed.pop("seed")
     rid = run_id(hashed)
     per_seed = {key: v for key, v in cfg.items() if key != "seeds"}
+    # load every dataset first: checks that need the data run before anything is embedded
+    loaded = {name: loader(name) for name in datasets}
+    for name, ds in loaded.items():
+        for label, (injector, sevs, kwargs) in failures.items():
+            try:
+                INJECTORS[injector].check_dataset(kwargs, sevs, ds)
+            except ValueError as e:
+                raise SystemExit(f"{label} on {name}: {e}") from None
     rows = []
     for name in datasets:
-        ds, retriever = loader(name), make_retriever()
+        ds, retriever = loaded[name], make_retriever()
         for seed in seeds:
             rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, failures, rid=rid)
     return to_frame(rows)
@@ -489,13 +546,47 @@ class UniqueKeyLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
+def merge_parts(frames):
+    """Rows from runs of the same config on disjoint seeds, as one table. Refuses parts
+    from different configs or with a seed in two parts, which would double-count it."""
+    import pandas as pd
+
+    frames = list(frames)
+    if not frames:
+        raise SystemExit("nothing to merge")
+    ids = sorted({r for f in frames for r in f["run_id"].unique()})
+    if len(ids) != 1:
+        raise SystemExit(f"parts come from different configs (run_ids {ids})")
+    seen: dict[int, int] = {}
+    for i, f in enumerate(frames):
+        for s in f["seed"].unique():
+            if s in seen:
+                raise SystemExit(f"seed {s} is in parts {seen[s]} and {i}")
+            seen[s] = i
+    return pd.concat(frames, ignore_index=True).sort_values(
+        ["seed", "failure", "severity", "trial", "detector"], kind="stable", ignore_index=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config")
     parser.add_argument("--final", action="store_true")
     parser.add_argument("--out", help="parquet path, default results/<config name>.parquet")
     parser.add_argument("--list", action="store_true", help="print the registered injectors and detectors")
+    parser.add_argument("--only-seeds", help="comma-separated subset of the config's seeds, for running parts in parallel")
+    parser.add_argument("--merge", nargs="+", metavar="PART", help="merge part parquets into --out instead of running")
     args = parser.parse_args()
+
+    if args.merge:
+        import pandas as pd
+
+        if not args.out:
+            parser.error("--merge needs --out")
+        df = merge_parts(pd.read_parquet(p) for p in args.merge)
+        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(args.out, index=False)
+        print(f"wrote {len(df)} rows from {len(args.merge)} parts to {args.out}")
+        return
 
     if args.list:
         load_plugins()
@@ -512,7 +603,13 @@ def main() -> None:
     frozen = check_frozen(args.config, out) if args.final else None
     started = time.time()
 
-    df = run(cfg, final=args.final)
+    only = None
+    if args.only_seeds:
+        try:
+            only = [int(x) for x in args.only_seeds.split(",")]
+        except ValueError:
+            parser.error(f"--only-seeds takes comma-separated integers, got {args.only_seeds!r}")
+    df = run(cfg, final=args.final, only_seeds=only)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
     print(f"wrote {len(df)} rows to {out}")
