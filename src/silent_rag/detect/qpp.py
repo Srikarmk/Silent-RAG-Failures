@@ -32,7 +32,7 @@ from __future__ import annotations
 import numpy as np
 
 from silent_rag.detect.base import register
-from silent_rag.detect.features import DEPTH, FeatureDrift
+from silent_rag.detect.features import DEPTH, FeatureDrift, register_permutation
 from silent_rag.types import Observation
 
 
@@ -82,3 +82,8 @@ class NQC(QPP):
         if not np.isfinite(top).all():
             raise ValueError("deep_scores has non-finite values")
         return top.std(axis=1)
+
+
+# qpp_max_perm, qpp_gap_perm, qpp_nqc_perm: a per-window permutation p-value (#73). One-sided
+# like the detectors themselves: only a window that looks less confident than the reference counts.
+QPP_PERMUTATION = {cls.name: register_permutation(cls) for cls in (MaxScore, GapQPP, NQC)}
