@@ -15,6 +15,7 @@ from silent_rag.plots._common import (  # noqa: E402
     label_order,
     line_with_band,
     nan_note,
+    point_with_interval,
     reference_curve,
     reference_line,
     require_rows,
@@ -109,6 +110,42 @@ def test_line_with_band_marker_defaults_to_a_circle_and_takes_any_shape():
     for shape in ("s", "^", "X", "h", "<"):  # the default marker sequence beyond the circle
         line, _ = line_with_band(axes(), [0, 1], [1, 2], s, color="k", label="a", marker=shape)
         assert (line.get_marker(), line.get_linestyle()) == (shape, "-")
+
+
+def interval_artists(ax):
+    """(marker line, bar segment [(x, low), (x, high)], cap y values) drawn by point_with_interval."""
+    (marker,) = [line for line in ax.lines if line.get_gid() == "interval_marker"]
+    bars = [c for c in ax.collections if c.get_gid() == "interval_bar"]
+    caps = [line for line in ax.lines if line.get_gid() == "interval_cap"]
+    segment = bars[0].get_segments()[0].tolist() if bars else None
+    return marker, segment, (sorted(caps[0].get_ydata()) if caps else None)
+
+
+def test_point_with_interval_draws_an_interval_that_excludes_its_estimate():
+    ax = axes()
+    marker, bar = point_with_interval(ax, 0.5, 0.80, 0.82, 0.90, resolved(), color="#0072B2", marker="^")
+    got_marker, segment, caps = interval_artists(ax)
+    assert got_marker is marker and bar is not None
+    assert segment == [[0.5, 0.82], [0.5, 0.90]] and caps == [0.82, 0.90]  # from the two ends, not lengths from y
+    assert (list(marker.get_xdata()), list(marker.get_ydata()), marker.get_marker()) == ([0.5], [0.80], "^")
+    assert ax.get_legend_handles_labels()[1] == []  # the caller names the bars
+
+
+def test_point_with_interval_marker_above_bar_hollow_and_nan_interval():
+    s = resolved()
+    ax = axes()
+    marker, bar = point_with_interval(ax, 1.0, 0.5, 0.4, 0.6, s, color="#D55E00", marker="X", hollow=True)
+    _, segment, caps = interval_artists(ax)
+    assert segment == [[1.0, 0.4], [1.0, 0.6]] and caps == [0.4, 0.6]
+    assert marker.get_zorder() > bar.get_zorder() and marker.get_linestyle() == "None"
+    assert (marker.get_markerfacecolor(), marker.get_markeredgecolor(), marker.get_markeredgewidth()) == (
+        "white", "#D55E00", 2.5)  # lines.width: heavier than the old fixed 2
+    assert bar.get_linewidth()[0] == 2.5 and marker.get_markersize() == 8
+    filled, _ = point_with_interval(axes(), 1.0, 0.5, 0.4, 0.6, s, color="k", marker="o")
+    assert filled.get_markerfacecolor() == filled.get_markeredgecolor()  # not hollow: one colour
+    ax = axes()
+    only, no_bar = point_with_interval(ax, 1.0, 0.5, np.nan, np.nan, s, color="k", marker="o")
+    assert no_bar is None and interval_artists(ax)[1:] == (None, None) and list(only.get_ydata()) == [0.5]
 
 
 def test_reference_line_is_grey_dashed_and_in_the_legend():

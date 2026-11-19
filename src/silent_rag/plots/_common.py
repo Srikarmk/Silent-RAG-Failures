@@ -77,6 +77,25 @@ def line_with_band(ax, x, y, settings: dict, *, color, label, low=None, high=Non
     return line, band
 
 
+def point_with_interval(ax, x, y, low, high, settings: dict, *, color, marker, hollow=False):
+    """One point at (x, y) with a vertical interval bar from low to high, drawn from its two ends
+    (not as lengths from y, so an interval that does not contain y draws as it is), with caps at
+    both ends and the marker above the bar (zorder 3 over 2). hollow: white fill, edge in `color`,
+    edge width lines.width. A NaN low or high draws the marker only. Returns (marker, bar or None).
+    The artists carry gid "interval_marker", "interval_bar" and "interval_cap"; none has a legend
+    entry (the caller names the bars, e.g. "error bars: 95% CI over questions")."""
+    lines = settings["lines"]
+    bar = None
+    if not (pd.isna(low) or pd.isna(high)):
+        bar = ax.vlines(x, low, high, colors=color, linewidth=lines["width"], zorder=2, gid="interval_bar")
+        ax.plot([x, x], [low, high], linestyle="none", marker="_", color=color, markersize=lines["marker_size"],
+                markeredgewidth=lines["width"], zorder=2, gid="interval_cap", label="_nolegend_")
+    fill = {"markerfacecolor": "white", "markeredgecolor": color, "markeredgewidth": lines["width"]} if hollow else {}
+    (point,) = ax.plot([x], [y], linestyle="none", marker=marker, color=color, markersize=lines["marker_size"],
+                       zorder=3, gid="interval_marker", label="_nolegend_", **fill)
+    return point, bar
+
+
 def reference_line(ax, settings: dict, *, label, y=None, x=None):
     """A horizontal (y=) or vertical (x=) reference line in the reference grey and style, named
     in the legend (e.g. "clean baseline", "AUROC 0.5", "alpha = 0.05")."""
