@@ -121,23 +121,42 @@ def end_labels(ax, x, ends, settings: dict, min_gap: float = 0.06) -> list:
 
 
 def nan_note(ax, table: pd.DataFrame, value_column: str, settings: dict, note_column: str = "note",
-             interval_columns=("ci_low", "ci_high"), wrap_width: int = 80):
-    """Write in the lower left of the axes what the table has that cannot be drawn, with the
-    reasons from the note column, one clause per kind, each wrapped to wrap_width characters:
+             interval_columns=("ci_low", "ci_high"), wrap_width: int | None = None):
+    """Write under the axes (below the x-axis label, left-aligned with the axes) what the table
+    has that cannot be drawn, with the reasons from the note column, one clause per kind, each
+    wrapped to wrap_width characters (None = as many as fit the axes' width, see _note_wrap_width):
     - rows with a NaN value_column: "3 points not shown (value undefined): undefined: no positive windows (3)";
     - rows with a value but a NaN in any of interval_columns: "2 intervals not shown: no CI: one seed (2)".
     Interval columns the table does not have are ignored (as in filter_include), so a table without
-    intervals gets no interval clause. None when there is nothing to report."""
+    intervals gets no interval clause. None when there is nothing to report.
+    The note is an annotation of the axes anchored to the x-axis label, so it never covers data
+    or the legend, constrained layout makes room for it, and each ax= panel gets its own."""
     values_missing = table[value_column].isna()
     present = [c for c in (interval_columns or ()) if c in table.columns]
     intervals_missing = ~values_missing & table[present].isna().any(axis=1)
     clauses = [_counted(table[values_missing], note_column, "point", " (value undefined)"),
                _counted(table[intervals_missing], note_column, "interval", "")]
+    if wrap_width is None:
+        wrap_width = _note_wrap_width(ax, settings["fonts"]["annotation"])
     clauses = [textwrap.fill(c, wrap_width) for c in clauses if c]
     if not clauses:
         return None
-    return ax.text(0.01, 0.01, "\n".join(clauses), transform=ax.transAxes, ha="left", va="bottom",
-                   fontsize=settings["fonts"]["annotation"], color=settings["colors"]["reference_grey"])
+    # x in axes fractions (0 = left edge), y at the bottom of the x-axis label's box, then 4 points lower
+    return ax.annotate("\n".join(clauses), xy=(0, 0), xycoords=(ax.transAxes, ax.xaxis.label), xytext=(0, -4),
+                       textcoords="offset points", ha="left", va="top", annotation_clip=False,
+                       fontsize=settings["fonts"]["annotation"], color=settings["colors"]["reference_grey"])
+
+
+NOTE_CHARACTER_WIDTH = 0.62  # a character's width as a fraction of the font size; conservative for the default font
+NOTE_MIN_WRAP_WIDTH = 20
+
+
+def _note_wrap_width(ax, font_size: float) -> int:
+    """Characters per note line that fit the axes' current width: the width in points (its share
+    of the figure times the figure width in inches times 72) over 0.62 x the font size, at least
+    20. Estimated when the note is written, before constrained layout adjusts the axes."""
+    width_points = ax.get_position().width * ax.figure.get_figwidth() * 72
+    return max(NOTE_MIN_WRAP_WIDTH, int(width_points / (NOTE_CHARACTER_WIDTH * font_size)))
 
 
 def _counted(rows: pd.DataFrame, note_column: str, noun: str, qualifier: str) -> str:

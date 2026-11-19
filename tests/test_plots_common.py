@@ -193,6 +193,30 @@ def test_nan_note_wraps_long_text():
     assert len(narrow) > len(lines) and all(len(line) <= 40 for line in narrow)
 
 
+def test_nan_note_sits_under_the_x_label_inside_the_figure_and_clear_of_the_legend():
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    s = resolved()
+    for ncols in (1, 2):  # one figure, and ax= panels: each panel's note under that panel
+        with style_context(s):
+            fig, panels = new_figure(s, ncols=ncols)
+        notes = []
+        for ax in np.atleast_1d(panels):
+            ax.plot([0, 1], [0, 1], label="a")
+            finish_axes(ax, s, title="t", xlabel="Severity", ylabel="y")
+            ax.legend(loc="lower left")  # where the old in-axes note was
+            notes.append((ax, nan_note(ax, AUROC, "auroc", s)))
+        canvas = FigureCanvasAgg(fig)
+        canvas.draw()
+        renderer = canvas.get_renderer()
+        for ax, note in notes:
+            box = note.get_window_extent(renderer)
+            assert box.y1 <= ax.xaxis.label.get_window_extent(renderer).y0  # below the axes and the x label
+            assert box.y1 <= ax.get_tightbbox(renderer).y0 + box.height + 1e-6  # the note is the lowest thing
+            assert box.x0 == pytest.approx(ax.get_window_extent(renderer).x0)  # left-aligned with the axes
+            assert not box.overlaps(ax.get_legend().get_window_extent(renderer))
+            assert fig.bbox.x0 <= box.x0 and box.x1 <= fig.bbox.x1 and fig.bbox.y0 <= box.y0  # not clipped
+
+
 def test_reference_curve_is_styled_like_reference_line_and_in_the_legend():
     ax, s = axes(), resolved(lines={"reference_line_style": ":", "reference_line_width": 2.0})
     curve = reference_curve(ax, [0, 100], [100, 0], s, label="proportional (1:1)")

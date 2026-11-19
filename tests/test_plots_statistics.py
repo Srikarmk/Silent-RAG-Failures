@@ -250,8 +250,8 @@ def test_auroc_nan_points_are_gaps_and_noted_and_n_seeds_range():
     ax = auroc_fig().axes[0]
     assert series(ax)["m_a"][1] == pytest.approx([NAN, 0.8], nan_ok=True)  # gap, not bridged
     (note,) = ax.texts
-    assert note.get_text() == ("1 point not shown (value undefined): undefined: no positive windows (1)\n"
-                               "1 interval not shown: no CI: one seed (1)")
+    assert " ".join(note.get_text().split()) == ("1 point not shown (value undefined): undefined: no positive windows (1) "
+                                                 "1 interval not shown: no CI: one seed (1)")  # line breaks as spaces
     assert SEED_BAND.format("8–10") in ax.get_legend_handles_labels()[1]  # rows with an interval only
     only_a = auroc_fig(include={"labels": ["m_a"]}).axes[0]
     assert SEED_BAND.format(10) in only_a.get_legend_handles_labels()[1]
