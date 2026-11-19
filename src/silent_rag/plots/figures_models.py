@@ -14,6 +14,7 @@ from silent_rag.plots._common import (
     finish_axes,
     label_order,
     line_with_band,
+    point_with_interval,
     reference_curve,
     reference_line,
     require_rows,
@@ -47,14 +48,13 @@ def _one_value(table, column: str) -> float:
 
 
 def _labelled_points(ax, xs, ys, lows, highs, labels, settings: dict) -> None:
-    """One point per label with an error bar from low to high, in the label's colour and marker
-    shape (marker_for), named next to the point (point_labels) rather than in the legend."""
-    lines = settings["lines"]
+    """One point per label with an error bar from low to high (point_with_interval: drawn from the
+    two ends, so an interval that excludes its estimate draws too; marker above the bar), in the
+    label's colour and marker shape (marker_for), named next to the point (point_labels) rather
+    than in the legend."""
     for x, y, low, high, label in zip(xs, ys, lows, highs, labels, strict=True):
-        ax.errorbar(x, y, yerr=[[y - low], [high - y]], color=color_for(label, settings, labels),
-                    marker=marker_for(label, settings, labels), linestyle="none",  # any marker, not only fmt's
-                    markersize=lines["marker_size"], elinewidth=lines["width"], capsize=lines["marker_size"] / 2,
-                    label="_nolegend_")
+        point_with_interval(ax, x, y, low, high, settings, color=color_for(label, settings, labels),
+                            marker=marker_for(label, settings, labels))
     point_labels(ax, xs, ys, labels, settings)
 
 

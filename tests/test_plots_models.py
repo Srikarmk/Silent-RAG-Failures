@@ -180,14 +180,15 @@ def models_fig(table=TABLE16, **kwargs):
 
 
 def points(ax):
-    """(x, y, colour, error bar low, high) per drawn model, in drawing order (the legend-only entry is NaN)."""
+    """(x, y, colour, error bar low, high) per drawn model, in drawing order: the markers and bars
+    point_with_interval draws (gid interval_marker / interval_bar); the legend-only entry has neither."""
+    markers = [line for line in ax.lines if line.get_gid() == "interval_marker"]
+    bars = [c for c in ax.collections if c.get_gid() == "interval_bar"]
+    assert len(markers) == len(bars)
     out = []
-    for container in ax.containers:
-        x, y = container[0].get_data()
-        if np.isnan(x[0]):
-            continue
-        (segment,) = container[2][0].get_segments()
-        out.append((x[0], y[0], container[0].get_color(), segment[0][1], segment[1][1]))
+    for marker, bar in zip(markers, bars, strict=True):
+        (segment,) = bar.get_segments()
+        out.append((marker.get_xdata()[0], marker.get_ydata()[0], marker.get_color(), segment[0][1], segment[1][1]))
     return out
 
 
@@ -312,13 +313,9 @@ def test_dose_lines_use_each_labels_marker_shape():
 
 
 def shapes(ax):
-    """(x, marker) per drawn point (the NaN legend-only entry skipped), in drawing order."""
-    out = []
-    for container in ax.containers:
-        line = container[0]
-        if not np.isnan(line.get_xdata()[0]):
-            out.append((line.get_xdata()[0], line.get_marker(), line.get_linestyle()))
-    return out
+    """(x, marker, line style) per drawn point (point_with_interval's markers), in drawing order."""
+    return [(line.get_xdata()[0], line.get_marker(), line.get_linestyle())
+            for line in ax.lines if line.get_gid() == "interval_marker"]
 
 
 def test_labelled_points_use_each_labels_marker_shape_and_any_marker():
@@ -327,3 +324,15 @@ def test_labelled_points_use_each_labels_marker_shape_and_any_marker():
     polygon = (5, 1, 0)  # a matplotlib marker fmt= could not take
     got = shapes(models_fig(markers={"by_label": {"m_a": polygon}}).axes[0])
     assert got[1][:2] == (0.80, polygon) and got[0][1] == "o"
+
+
+def test_point_figures_draw_an_interval_that_excludes_its_estimate():
+    excluded = TABLE16.assign(topk_shared_ci_low=[4.2, 7.6], topk_shared_ci_high=[4.6, 8.3])  # m_a: 4.0 not in [4.2, 4.6]
+    ax = models_fig(excluded).axes[0]
+    assert points(ax)[1][1:2] + points(ax)[1][3:] == (4.0, 4.2, 4.6)  # bar from its ends, marker at the estimate
+    markers = [line for line in ax.lines if line.get_gid() == "interval_marker"]
+    bars = [c for c in ax.collections if c.get_gid() == "interval_bar"]
+    assert all(m.get_zorder() > b.get_zorder() for m, b in zip(markers, bars, strict=True))  # marker above its bar
+    drops = DROPS.assign(ci_low=np.where(DROPS["failure"].eq("m_b") & DROPS["severity"].eq(1.0), 0.13, DROPS["ci_low"]))
+    got = points(at_severity(drops).axes[0])  # m_b at severity 1: drop 0.12 not in [0.13, 0.14]
+    assert got[0][1:2] + got[0][3:] == (0.12, 0.13, 0.14)
