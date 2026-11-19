@@ -29,3 +29,6 @@ figures:
       F1_partial_upgrade_all_minilm_l12_v2: [14, -18]    # below right of its own point, under all-MiniLM-L6-v2's error bar
   share_of_significant_windows_vs_severity:
     annotate_ends: false                         # three lines end at 100%: the legend names them
+  spearman_vs_severity:
+    legend: {outside: true, loc: lower center, ncol: 2}   # below the axes: inside, it covers the bands
+    figure: {height: 8.5}                        # room for the legend, so the axes keep about their usual height
