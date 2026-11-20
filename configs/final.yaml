@@ -21,5 +21,8 @@ failures:
   # as in dev.yaml) go here once their cost on FiQA is timed: mixed truncation re-embeds the corpus at 512.
 detectors: [ks_top1, re_embed]
 window_size: 100
+# harmful = p < 0.05 and nDCG@10 drop >= min_drop (#52): no negative control comes out
+# harmful at 0.02; F2 is reported at 0.01 as well, since most of its damage is below 0.02
+min_drop: 0.02
 trials: 20
 seeds: [0, 1, 2]

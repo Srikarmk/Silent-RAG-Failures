@@ -104,3 +104,34 @@ def test_distractors_run_through_the_runner_as_a_failure_re_embed_cannot_see(mon
     assert (off.ndcg_drop == 0).all()  # no toy query shares a word with these distractors
     # every added row is what the clean model makes of its text, so re_embed sees nothing
     assert (off[off.detector == "re_embed"].score == 0).all()
+
+
+# severity that doesn't fit the source, caught before anything is embedded (#76 review)
+
+
+class NoEncode:
+    def encode(self, *a, **k):
+        raise AssertionError("embedded something before the severity check")
+
+
+def run_with_source(monkeypatch, n_source, severities):
+    load_plugins()
+    corpus = {f"a{i}": f"unrelated{i} debate{i} filler" for i in range(n_source)}
+    monkeypatch.setattr(Distractors, "load", staticmethod(lambda source: corpus))
+    cfg = {"datasets": ["nfcorpus"], "failures": {"F2_distractors": severities}, "detectors": ["ks_top1"],
+           "window_size": 10, "trials": 1}
+    return runner.run(cfg, loader=lambda name: toy_dataset(), make_retriever=lambda: Retriever("fake", encoder=NoEncode()))
+
+
+def test_a_severity_bigger_than_the_source_fails_before_embedding(monkeypatch):
+    # toy corpus: 40 docs; 0.5 needs 20 but the source has 5
+    with pytest.raises(SystemExit, match=r"F2_distractors on nfcorpus: severity 0.5 adds 20 docs but arguana has 5; .* 0.125"):
+        run_with_source(monkeypatch, n_source=5, severities=[0.1, 0.5])
+
+
+def test_check_dataset_passes_when_the_source_is_big_enough(monkeypatch):
+    corpus = {f"a{i}": "x" for i in range(20)}
+    monkeypatch.setattr(Distractors, "load", staticmethod(lambda source: corpus))
+    Distractors.check_dataset({}, [0.1, 0.5], toy_dataset())  # needs 20, has 20
+    with pytest.raises(ValueError, match="largest severity that fits is 0.500"):
+        Distractors.check_dataset({}, [0.9], toy_dataset())

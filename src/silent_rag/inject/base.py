@@ -45,6 +45,12 @@ class Injector(ABC):
         None when the injector doesn't change specific document rows. Injectors that do
         override it (PartialUpgrade does). Returns None by default."""
         return None
+    @classmethod
+    def check_dataset(cls, params: dict, severities: list[float], dataset) -> None:
+        """Checks that need the data, such as its size: run for every dataset of the run
+        once it is loaded, before anything is embedded, so a setting that can't work on
+        one dataset fails at the start of the run, not after the others have run. Raise
+        ValueError to reject. Does nothing by default."""
 
     @abstractmethod
     def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState: ...
