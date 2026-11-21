@@ -18,3 +18,24 @@ jobs:
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e ".[dev]"
       - run: pytest -q
+
+  # The real pipeline end to end on a machine that isn't ours (#34): download NFCorpus
+  # and two models, embed, inject, detect, and build the report. Not a result, a check
+  # that a fresh checkout runs.
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('configs/smoke.yaml', 'src/silent_rag/data.py') }}
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e .
+      - run: python -m silent_rag.run --config configs/smoke.yaml
+      - run: python -m silent_rag.eval.report results/smoke.parquet --min-drop 0.02 --n-boot 100 --out results/smoke.md
+      - run: cat results/smoke.md >> "$GITHUB_STEP_SUMMARY"
