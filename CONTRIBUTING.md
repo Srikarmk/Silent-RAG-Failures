@@ -26,13 +26,13 @@ On a Mac, if anything that uses both faiss and torch just exits with no error, r
 | Failure injection | Shane | `inject/` |
 | Detectors | Alekhya | `detect/` |
 
-This isn't fixed. Once injection is stable (around week 4), Shane moves over to help with detectors since that's the biggest chunk. Weeks 8 to 10 we're all on the held-out run and the guide.
+This isn't fixed. Once injection is stable (around week 4), Shane moves over to help with detectors since that's the biggest chunk. From Nov 20 we're all on the held-out run, the guide and the final report.
 
 ## How the code fits together
 
 The whole thing hangs on three interfaces in `src/silent_rag/`:
 
-- **`Injector.apply(state, severity, seed)`** returns a damaged copy of the retrieval state. Severity always means fraction affected (0.1 to 0.9). Same seed, same result.
+- **`Injector.apply(state, severity, seed)`** returns a damaged copy of the retrieval state. Severity always means the fraction affected, in (0, 1]. Same seed, same result.
 - **`Detector.fit(reference)` / `Detector.score(window)`** take an `Observation`, which has query embeddings, top-k ids and scores, but **no qrels**. That's on purpose. If a detector needs labels, it's not label-free and it doesn't belong in this project.
 - **`ResultRow`** is one row per condition, trial and detector. Every plot comes from this table, so if you need a new column, add it there rather than making a side CSV.
 
