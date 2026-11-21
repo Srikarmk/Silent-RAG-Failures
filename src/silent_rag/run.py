@@ -2,6 +2,17 @@
 
     python -m silent_rag.run --config configs/dev.yaml
     python -m silent_rag.run --config configs/final.yaml --final
+
+The held-out run, from a frozen commit pushed with its tag so the sidecar's commit can be
+checked against GitHub:
+
+    git tag final-v1 && git push origin final-v1
+    python -m silent_rag.run --config configs/final.yaml --final
+
+or in parts on disjoint seeds, then merged (each part and the merge write a sidecar):
+
+    python -m silent_rag.run --config configs/final.yaml --final --only-seeds 0,1 --out results/final_p1.parquet
+    python -m silent_rag.run --merge results/final_p*.parquet --out results/final.parquet
 """
 
 from __future__ import annotations
@@ -12,6 +23,10 @@ import importlib
 import inspect
 import json
 import pkgutil
+import platform
+import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -65,6 +80,60 @@ def check_final_revision(run_cfg: dict, final: bool) -> None:
             "--final needs the clean model's revision pinned to a 40-character lowercase "
             f"commit hash, got {run_cfg['revision']!r}"
         )
+
+
+ROOT = Path(__file__).resolve().parents[2]
+FINAL_TAG = re.compile(r"final-v[0-9]+")
+FROZEN = ("src", "configs")  # what decides the numbers: the code and every config, weights included
+
+
+def git(*args: str, repo: Path = ROOT) -> str:
+    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"--final needs the git checkout the code runs from; `git {' '.join(args)}` failed: "
+                         f"{out.stderr.strip()}")
+    return out.stdout.strip()
+
+
+def check_frozen(config_path: str, out: Path, git=git, root: Path = ROOT) -> dict:
+    """The held-out run happens once (#29), so it has to run from frozen, tagged code.
+
+    Checked in the checkout this code was imported from, not the current directory, so
+    a worktree or a PYTHONPATH can't run other code than the one that's tagged:
+    - nothing under src/ or configs/ differs from HEAD, untracked files included
+    - the config is a committed file under configs/
+    - HEAD carries a final-v<N> tag
+    - the output file doesn't exist yet, so a second run can't overwrite the first.
+      This is per output path: it stops an accidental overwrite, not a rerun under a
+      different --out
+    Returns what the sidecar records about the code."""
+    dirty = git("status", "--porcelain", "--untracked-files=all", "--", *FROZEN)
+    if dirty:
+        raise SystemExit(f"--final needs src/ and configs/ committed, these differ from HEAD:\n{dirty}")
+    cfg = Path(config_path).resolve()
+    if not cfg.is_relative_to(root / "configs"):
+        raise SystemExit(f"--final needs the config under {root / 'configs'}, got {cfg}")
+    tags = [t for t in git("tag", "--points-at", "HEAD").split() if FINAL_TAG.fullmatch(t)]
+    if not tags:
+        raise SystemExit("--final needs HEAD tagged final-v<N> (e.g. `git tag final-v1`); tag the frozen commit first")
+    for path in (out, out.with_suffix(".json")):
+        if path.exists():
+            raise SystemExit(f"{path} already exists; the held-out run happens once, refusing to overwrite it")
+    return {"commit": git("rev-parse", "HEAD"), "tag": sorted(tags)[-1],
+            "config": str(cfg.relative_to(root)), "config_sha1": hashlib.sha1(cfg.read_bytes()).hexdigest()}
+
+
+def environment() -> dict:
+    from importlib.metadata import PackageNotFoundError, version
+
+    def v(pkg):
+        try:
+            return version(pkg)
+        except PackageNotFoundError:
+            return None
+
+    return {"python": sys.version.split()[0], "platform": platform.platform(), "machine": platform.machine(),
+            "packages": {p: v(p) for p in ("numpy", "torch", "sentence-transformers", "faiss-cpu", "scikit-learn", "pandas")}}
 
 
 def load_plugins() -> None:
@@ -511,6 +580,36 @@ def merge_parts(frames):
         ["seed", "failure", "severity", "trial", "detector"], kind="stable", ignore_index=True)
 
 
+SIDECAR_CODE = ("commit", "tag", "config", "config_sha1")
+
+
+def merge_sidecars(parts: list[Path], out: Path) -> dict | None:
+    """What a merged run used, from its parts' sidecars. None when no part has one (a dev
+    merge). A --final merge needs every part to have one, all from the same commit, tag
+    and config, and refuses to overwrite an existing result, like check_frozen."""
+    sides = [p.with_suffix(".json") for p in parts]
+    have = [s for s in sides if s.exists()]
+    if not have:
+        return None
+    if len(have) != len(sides):
+        missing = [str(s) for s in sides if not s.exists()]
+        raise SystemExit(f"some parts are --final runs and some aren't; no sidecar for {missing}")
+    recs = [json.loads(s.read_text()) for s in sides]
+    for key in SIDECAR_CODE:
+        values = sorted({str(r.get(key)) for r in recs})
+        if len(values) != 1:
+            raise SystemExit(f"parts ran from different code: {key} is {values}")
+    for path in (out, out.with_suffix(".json")):
+        if path.exists():
+            raise SystemExit(f"{path} already exists; the held-out run happens once, refusing to overwrite it")
+    return {**{k: recs[0][k] for k in SIDECAR_CODE},
+            "run_ids": sorted({i for r in recs for i in r.get("run_ids", [])}),
+            "rows": sum(r.get("rows", 0) for r in recs),
+            "started": min(r["started"] for r in recs), "finished": max(r["finished"] for r in recs),
+            "parts": [{"path": str(p), **{k: v for k, v in r.items() if k not in SIDECAR_CODE}}
+                      for p, r in zip(parts, recs)]}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config")
@@ -526,10 +625,17 @@ def main() -> None:
 
         if not args.out:
             parser.error("--merge needs --out")
-        df = merge_parts(pd.read_parquet(p) for p in args.merge)
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(args.out, index=False)
-        print(f"wrote {len(df)} rows from {len(args.merge)} parts to {args.out}")
+        out, parts = Path(args.out), [Path(p) for p in args.merge]
+        merged = merge_sidecars(parts, out)
+        if args.final and merged is None:
+            parser.error("--final --merge needs the parts' sidecars; run each part with --final")
+        df = merge_parts(pd.read_parquet(p) for p in parts)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(out, index=False)
+        print(f"wrote {len(df)} rows from {len(parts)} parts to {out}")
+        if merged is not None:
+            out.with_suffix(".json").write_text(json.dumps(merged, indent=2))
+            print(f"wrote what the parts used to {out.with_suffix('.json')}")
         return
 
     if args.list:
@@ -543,6 +649,9 @@ def main() -> None:
     with open(args.config) as f:
         cfg = yaml.load(f, Loader=UniqueKeyLoader)
     check_datasets(cfg["datasets"], args.final)
+    out = Path(args.out or f"results/{Path(args.config).stem}.parquet")
+    frozen = check_frozen(args.config, out) if args.final else None
+    started = time.time()
 
     only = None
     if args.only_seeds:
@@ -551,10 +660,15 @@ def main() -> None:
         except ValueError:
             parser.error(f"--only-seeds takes comma-separated integers, got {args.only_seeds!r}")
     df = run(cfg, final=args.final, only_seeds=only)
-    out = Path(args.out or f"results/{Path(args.config).stem}.parquet")
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
     print(f"wrote {len(df)} rows to {out}")
+    if frozen is not None:
+        side = out.with_suffix(".json")
+        side.write_text(json.dumps({**frozen, "run_ids": sorted(df.run_id.unique().tolist()), "rows": len(df),
+                                    "seeds": sorted(int(x) for x in df.seed.unique()),
+                                    "started": started, "finished": time.time(), **environment()}, indent=2))
+        print(f"wrote what the run used to {side}")
 
 
 if __name__ == "__main__":
