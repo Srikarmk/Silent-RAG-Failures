@@ -5,13 +5,29 @@ import numpy as np
 import pytest
 
 from silent_rag import pipeline
+from silent_rag import run as runner
 from silent_rag.inject.base import REGISTRY
 from silent_rag.inject.f1_partial_upgrade import PartialUpgrade
+from silent_rag.inject.model_check import ModelNotCachedError
 from silent_rag.pipeline import Retriever
 from silent_rag.run import load_plugins
 from test_pipeline import HashEncoder, toy_dataset
 
 ALT = {"alt_model": "alt/model", "alt_revision": "abc123"}
+
+
+@pytest.fixture(autouse=True)
+def fake_model_checker(monkeypatch):
+    """check_config's cache lookup replaced by a recorder that accepts, so these tests stay offline.
+    Set `.error` to make it raise."""
+    def fake(*args):
+        fake.calls.append(args)
+        if fake.error is not None:
+            raise fake.error
+
+    fake.calls, fake.error = [], None
+    monkeypatch.setattr(PartialUpgrade, "model_checker", staticmethod(fake))
+    return fake
 
 
 def test_registered_under_its_config_name():
@@ -67,9 +83,26 @@ def test_check_config_rejects_the_clean_model_whatever_the_revision(alt_model, a
 
 @pytest.mark.parametrize("alt_model", ["intfloat/e5-small-v2", "intfloat/multilingual-e5-base", " INTFLOAT/E5-small-v2 "],
                          ids=["e5", "multilingual-e5", "case-and-spaces"])
-def test_check_config_rejects_models_that_need_a_document_prefix(alt_model):
+def test_check_config_rejects_models_that_need_a_document_prefix(alt_model, fake_model_checker):
     with pytest.raises(ValueError, match="needs a document prefix"):
         PartialUpgrade.check_config({"alt_model": alt_model, "alt_revision": HASH}, CLEAN)
+    assert fake_model_checker.calls == []  # the name check rejects e5 before any cache lookup
+
+
+@pytest.mark.parametrize("clean_revision", [CLEAN["revision"], None], ids=["pinned", "unpinned"])
+def test_check_config_passes_the_replacement_and_the_runs_baseline_to_the_checker(fake_model_checker, clean_revision):
+    PartialUpgrade.check_config(PINNED[1], {**CLEAN, "revision": clean_revision})
+    assert fake_model_checker.calls == [(PINNED[1]["alt_model"], PINNED[1]["alt_revision"], CLEAN["model"], clean_revision)]
+
+
+@pytest.mark.parametrize("error", [ValueError("no Normalize module"), ModelNotCachedError("README.md is not cached")],
+                         ids=["rejected", "not-cached"])
+def test_checker_errors_become_the_labelled_stop(fake_model_checker, error):
+    load_plugins()
+    fake_model_checker.error = error
+    failures = {"F1_label": ("F1_partial_upgrade", [0.5], dict(PINNED[1]))}
+    with pytest.raises(SystemExit, match=f"^F1_label: {error}$"):
+        runner.check_injectors(failures, CLEAN)
 
 
 class SmallEncoder:
@@ -98,6 +131,52 @@ def test_alt_retriever_keeps_the_clean_settings_except_model_and_revision(monkey
     inj, state = attached(monkeypatch, HashEncoder(), seen, **clean)
     assert seen == [(ALT["alt_model"], {**clean, "revision": ALT["alt_revision"], "device": "cpu"})]
     assert inj.alt_embeddings.shape == state.doc_embeddings.shape
+
+
+CLEAN_SETTINGS = dict(normalize=False, query_prefix="query: ", max_seq_length=128, revision="cleanrev", batch_size=8)
+
+
+def test_build_replacement_retriever_passes_the_same_settings_as_attach(monkeypatch):
+    seen = []
+
+    class Recording(Retriever):
+        def __init__(self, model, **kw):
+            seen.append((model, kw))
+            super().__init__(model, **kw)
+
+    monkeypatch.setattr(PartialUpgrade, "retriever_cls", Recording)
+    clean = Retriever("clean/model", encoder=HashEncoder(), **CLEAN_SETTINGS)
+    PartialUpgrade(**ALT).build_replacement_model_retriever(clean)
+    # the same constructor call the settings test above sees through attach()
+    assert seen == [(ALT["alt_model"], {**CLEAN_SETTINGS, "revision": ALT["alt_revision"], "device": "cpu"})]
+
+
+@pytest.mark.parametrize("query_prefix, expected", [
+    (None, "query: "),                      # inherits the baseline's prefix
+    ("Represent this: ", "Represent this: "),  # a string replaces it
+    ("", ""),                               # "" clears the inherited prefix
+])
+def test_build_replacement_retriever_query_prefix(query_prefix, expected):
+    clean = Retriever("clean/model", encoder=HashEncoder(), **CLEAN_SETTINGS)
+    alt = PartialUpgrade(**ALT).build_replacement_model_retriever(clean, query_prefix=query_prefix)
+    assert alt.query_prefix == expected
+    assert (alt.model, alt.revision) == (ALT["alt_model"], ALT["alt_revision"])
+    assert (alt.normalize, alt.max_seq_length, alt.batch_size, alt.device) == (False, 128, 8, "cpu")
+
+
+def test_build_replacement_retriever_does_not_copy_the_encoder():
+    clean = Retriever("clean/model", encoder=HashEncoder(), **CLEAN_SETTINGS)
+    alt = PartialUpgrade(**ALT).build_replacement_model_retriever(clean)
+    assert clean._encoder is not None and alt._encoder is None  # loads the replacement model when first used
+
+
+def test_attach_output_is_unchanged_by_the_refactor(monkeypatch):
+    inj, state = attached(monkeypatch, ShiftedEncoder(), **CLEAN_SETTINGS)
+    # attach() before this step built this retriever inline and encoded the corpus with it
+    old = Retriever(ALT["alt_model"], encoder=ShiftedEncoder(), normalize=False, query_prefix="query: ",
+                    max_seq_length=128, revision=ALT["alt_revision"], batch_size=8, device="cpu")
+    np.testing.assert_array_equal(inj.alt_embeddings, old.encode(state.doc_texts))
+    assert inj.attached_doc_ids == list(state.doc_ids)
 
 
 def test_alt_corpus_is_encoded_once_then_loaded_from_the_cache(monkeypatch):
@@ -144,6 +223,42 @@ def test_rows_follow_the_seed_and_grow_with_severity(monkeypatch):
     assert rows(0.5, 0) == rows(0.5, 0)
     assert rows(0.5, 0) != rows(0.5, 1)
     assert rows(0.5, 0) < rows(0.9, 0)
+
+
+@pytest.mark.parametrize("severity", [0.1, 0.5, 0.9, 1.0])
+@pytest.mark.parametrize("seed", [0, 7])
+def test_replaced_rows_are_the_rows_apply_changes(monkeypatch, severity, seed):
+    inj, state = attached(monkeypatch, ShiftedEncoder())  # every alt vector differs, so changed rows are visible
+    n = len(state.doc_ids)
+    rows = PartialUpgrade.replaced_document_row_indices(n, severity, seed)
+    np.testing.assert_array_equal(np.sort(rows), upgraded_rows(inj.apply(state, severity, seed), state))
+    np.testing.assert_array_equal(inj.modified_document_row_indices(n, severity, seed), rows)
+
+
+@pytest.mark.parametrize("severity, n, count", [(0.1, 40, 4), (0.5, 40, 20), (1.0, 40, 40), (0.25, 10, 2), (0.01, 40, 0)])
+def test_replaced_row_count_is_round_severity_times_n(severity, n, count):
+    # Python's round() rounds halves to even: 0.25 * 10 = 2.5 -> 2
+    rows = PartialUpgrade.replaced_document_row_indices(n, severity, seed=0)
+    assert len(rows) == count == round(severity * n)
+    assert len(set(rows.tolist())) == count and ((0 <= rows) & (rows < n)).all()
+
+
+def test_replaced_rows_are_nested_across_severities_within_a_seed():
+    by_severity = [PartialUpgrade.replaced_document_row_indices(40, s, seed=3) for s in (0.1, 0.3, 0.5, 0.9, 1.0)]
+    for lower, higher in zip(by_severity, by_severity[1:]):
+        np.testing.assert_array_equal(higher[: len(lower)], lower)  # a prefix, so also a subset
+    assert set(by_severity[-1].tolist()) == set(range(40))
+
+
+@pytest.mark.parametrize("severity, seed", [(0.3, 0), (0.7, 5)])
+def test_apply_output_is_unchanged_by_the_refactor(monkeypatch, severity, seed):
+    inj, state = attached(monkeypatch, ShiftedEncoder())
+    # apply() before this step selected rows inline with exactly this expression
+    n = len(state.doc_ids)
+    expected = state.doc_embeddings.copy()
+    old_rows = np.random.default_rng(seed).permutation(n)[: round(severity * n)]
+    expected[old_rows] = inj.alt_embeddings[old_rows]
+    np.testing.assert_array_equal(inj.apply(state, severity, seed).doc_embeddings, expected)
 
 
 def test_input_state_is_left_unchanged(monkeypatch):

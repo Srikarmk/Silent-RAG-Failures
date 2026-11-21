@@ -20,7 +20,7 @@ import yaml
 
 from silent_rag import data, detect, inject
 from silent_rag.detect.base import REGISTRY as DETECTORS
-from silent_rag.eval.ground_truth import paired_bootstrap, per_query_ndcg
+from silent_rag.eval.ground_truth import paired_bootstrap, per_query_ndcg, window_has_significant_ndcg10_drop
 from silent_rag.eval.results import ResultRow, to_frame
 from silent_rag.inject.base import REGISTRY as INJECTORS
 from silent_rag.pipeline import Retriever, is_commit_hash
@@ -101,6 +101,20 @@ def detector_params(entries) -> dict[str, dict]:
 
 def run_id(cfg: dict) -> str:
     return hashlib.sha1(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
+def run_id_from_run_config(run_config: dict) -> str:
+    """The run_id that run() writes into every row for this run config, as loaded from YAML.
+
+    Hashes the raw config with DEFAULTS filled in; with `seeds`, `seed` is dropped so every
+    seed shares one run_id. Dataset names are hashed as written (no canonical()). The hash
+    is of JSON text, so a default must be written as DEFAULTS stores it: `min_drop: 0.0`
+    keeps the run_id, `min_drop: 0` (an int) changes it.
+    """
+    hashed = {**DEFAULTS, **run_config}
+    if "seeds" in run_config:
+        hashed.pop("seed")
+    return run_id(hashed)
 
 
 def check_severities(failures: dict) -> None:
@@ -296,6 +310,26 @@ def docs_of(state, clean, clean_docs):
     return doc_tuples(state)
 
 
+def reference_and_pool_indices(n_questions: int, window_size: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """(reference_indices, pool_indices): one permutation per seed; its first window_size positions
+    are the reference window, the rest the pool that scored windows (and query-shift injectors)
+    draw from. The same for every trial."""
+    order = np.random.default_rng(seed).permutation(n_questions)
+    return order[:window_size], order[window_size:]
+
+
+def window_question_indices(n_questions: int, window_size: int, seed: int, trial: int) -> tuple[np.ndarray, np.ndarray]:
+    """(reference_indices, window_indices) the runner uses for this seed and trial.
+
+    The reference window is the first window_size positions of one permutation per seed, so it
+    is the same for every trial; the scored window is drawn from the remaining positions with
+    rng([seed, trial]), so the two never overlap and every condition sees the same window.
+    Depends only on (n_questions, window_size, seed, trial), not on the failures in a config.
+    """
+    reference, pool = reference_and_pool_indices(n_questions, window_size, seed)
+    return reference, np.random.default_rng([seed, trial]).choice(pool, window_size, replace=False)
+
+
 def injector_seed(seed: int, trial: int) -> int:
     # seed + trial would give seed 0 / trial 1 the same damage as seed 1 / trial 0
     return int(np.random.SeedSequence([seed, trial]).generate_state(1)[0])
@@ -328,11 +362,11 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
     clean_by_id = dict(zip(state.query_ids, clean_ndcg))
 
     # The reference window the detectors are fit on never overlaps the windows they score.
-    order = np.random.default_rng(seed).permutation(len(state.query_ids))
-    ref_idx, pool = order[:window_size], order[window_size:]
+    n_questions = len(state.query_ids)
+    if n_questions - window_size < window_size:
+        raise SystemExit(f"{ds.name}: {n_questions} queries is too few for two windows of {window_size}")
+    ref_idx, pool = reference_and_pool_indices(n_questions, window_size, seed)  # the same for every trial
     ref_ids = {state.query_ids[i] for i in ref_idx}
-    if len(pool) < window_size:
-        raise SystemExit(f"{ds.name}: {len(order)} queries is too few for two windows of {window_size}")
 
     reference = observe(
         state, ref_idx, [clean_ids[i] for i in ref_idx], clean_scores[ref_idx], clean_q[ref_idx], clean_docs,
@@ -358,7 +392,7 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
         injector = made.get(failure)
         for trial in range(cfg["trials"]):
             # same windows for every condition, so trial t is comparable across them
-            idx = np.random.default_rng([seed, trial]).choice(pool, window_size, replace=False)
+            _, idx = window_question_indices(n_questions, window_size, seed, trial)
             if injector is None:
                 damaged = state
                 topk_ids = [clean_ids[i] for i in idx]
@@ -401,7 +435,7 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                         detector=name,
                         score=float(score),
                         ndcg_drop=drop,
-                        harmful=p < alpha and drop >= min_drop,
+                        harmful=window_has_significant_ndcg10_drop(p, drop, alpha, min_drop),
                         p_value=p,
                         cost_s=wall if uncached is None else float(uncached),
                         # API-based detectors report what this check would cost uncached
@@ -452,10 +486,7 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None, o
     check_detectors(params, cfg)
     check_final_revision(run_cfg, final)
     # one run_id for all seeds, so the replicates can be grouped together
-    hashed = {**DEFAULTS, **cfg}
-    if "seeds" in cfg:
-        hashed.pop("seed")
-    rid = run_id(hashed)
+    rid = run_id_from_run_config(cfg)
     per_seed = {key: v for key, v in cfg.items() if key != "seeds"}
     # load every dataset first: checks that need the data run before anything is embedded
     loaded = {name: loader(name) for name in datasets}

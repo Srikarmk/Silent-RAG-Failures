@@ -1,0 +1,27 @@
+min_mean_ndcg10_drops_for_harmful_share:
+- 0.0
+- 0.02
+- 0.06
+min_mean_ndcg10_drop_grid_for_auroc:
+  start: 0.0
+  stop: 0.1
+  step: 0.01
+question_bootstrap:
+  resamples: 10000
+  seed: 0
+window_bootstrap:
+  resamples: 2000
+  seed: 0
+seed_cluster_bootstrap:
+  resamples: 2000
+  seed: 0
+question_vulnerability:
+  top_fractions:
+  - 0.1
+  permutations: 10000
+  seed: 0
+injector_specific:
+  F1_partial_upgrade:
+    replacement_model_difference_table:
+      query_prefixes:
+        BAAI/bge-small-en-v1.5: 'Represent this sentence for searching relevant passages: '

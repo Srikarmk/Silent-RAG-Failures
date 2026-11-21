@@ -40,6 +40,17 @@ def bootstrap_ci(scores, n_boot: int = 10_000, alpha: float = 0.05, seed: int = 
     return float(scores.mean()), float(lo), float(hi)
 
 
+def window_has_significant_ndcg10_drop(p_value, mean_ndcg10_drop, alpha: float, min_mean_ndcg10_drop: float):
+    """The rule that labels a window harmful: a significant drop that is also large enough.
+
+    True when p_value < alpha (strict) and mean_ndcg10_drop >= min_mean_ndcg10_drop.
+    p_value and mean_ndcg10_drop come from paired_bootstrap, so a NaN in either gives False.
+    Takes scalars or arrays; returns a Python bool for scalars, a boolean array otherwise.
+    """
+    labelled = (np.asarray(p_value) < alpha) & (np.asarray(mean_ndcg10_drop) >= min_mean_ndcg10_drop)
+    return bool(labelled) if labelled.ndim == 0 else labelled
+
+
 def paired_bootstrap(clean: np.ndarray, damaged: np.ndarray, n_boot: int = 2000, seed: int = 0):
     """Mean drop (clean - damaged) and a one-sided p-value for "no drop".
 

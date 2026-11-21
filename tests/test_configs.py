@@ -8,6 +8,7 @@ from silent_rag.detect.base import REGISTRY as DETECTORS
 from silent_rag.detect.base import Detector
 from silent_rag.inject.base import REGISTRY as INJECTORS
 from silent_rag.inject.base import Injector
+from silent_rag.inject.model_check import ModelNotCachedError
 
 CONFIGS = sorted((Path(__file__).parents[1] / "configs").glob("*.yaml"))
 
@@ -28,9 +29,18 @@ def test_configs_are_valid(path):
 
 @pytest.mark.parametrize("path", CONFIGS, ids=lambda p: p.name)
 def test_configs_pass_injector_checks(path):
-    """The real configs get past every injector's check_config, with the run_cfg run() builds."""
+    """The real configs get past every injector's check_config, with the run_cfg run() builds.
+    Skipped when a model file the check reads is not in the local Hugging Face cache (e.g. CI);
+    any other rejection fails."""
     cfg, failures = load(path)
-    runner.check_injectors(failures, runner.injector_run_cfg(runner.default_retriever(cfg)))
+    run_cfg = runner.injector_run_cfg(runner.default_retriever(cfg))
+    # check_injectors turns every ValueError into SystemExit, so look for the not-cached case first
+    for label, (name, _, params) in failures.items():
+        try:
+            INJECTORS[name].check_config(dict(params), run_cfg)
+        except ModelNotCachedError as e:
+            pytest.skip(f"{label}: {e}")
+    runner.check_injectors(failures, run_cfg)
 
 
 def test_dev_and_final_run_the_same_f1():

@@ -1,0 +1,143 @@
+{
+  "bootstrap_settings": {
+    "question_bootstrap": {
+      "resamples": 10000,
+      "seed": 0
+    },
+    "question_vulnerability": {
+      "permutations": 10000,
+      "seed": 0,
+      "top_fractions": [
+        0.1
+      ]
+    },
+    "seed_cluster_bootstrap": {
+      "resamples": 2000,
+      "seed": 0
+    },
+    "window_bootstrap": {
+      "resamples": 2000,
+      "seed": 0
+    }
+  },
+  "git": {
+    "commit": "0168d46f52773143f6bb847bf94755111736faf5",
+    "note": null,
+    "uncommitted_changes": true
+  },
+  "inputs": {
+    "analysis_config": {
+      "path": "experiments/analysis_f1/analysis_f1.analysis.yaml",
+      "sha256": "9a0e4f79b760001c005b6ba15e7c3dc87888943486513cb3934346cf8cb0d58f"
+    },
+    "results": {
+      "path": "results/analysis_f1.parquet",
+      "sha256": "79cbf43e0bd2ee9f79f7e39b974a1253677abac088805565887d968c6e242a60"
+    },
+    "run_config": {
+      "path": "experiments/analysis_f1/analysis_f1.yaml",
+      "sha256": "2ab8821eb644ee226b1b657127294d719966207909444a65f8b5afe2e52a8c0a"
+    }
+  },
+  "machine": {
+    "cpu": "Apple M5 Pro",
+    "cpu_count": 15,
+    "omp_num_threads": "1",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "outputs": {
+    "auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop.parquet": "7fbb40394a7fec37767ed7d97444e429436622290f9caf8524b46aa4d6d07acc",
+    "auroc_statistic_harmful_vs_negative_windows_by_severity.parquet": "d17ffb0eb3ef96a503bb7b77a70b97712736b84a5046bbfb0499444679dfe387",
+    "check_mean_window_ndcg10_drop_against_reference.parquet": "3cc1e4cb4d1979fee1536a1816b7c1402b44009e18a28a11cd23b4fe1a0884a8",
+    "mean_ndcg10_drop_all_test_questions_by_severity.parquet": "b6e55512a7a27d6d11fa813b7476ffe48e5dbce02513f3e9b3f0089b305254f8",
+    "median_seconds_per_statistic_evaluation.parquet": "668d7b0051393cce16ecd642c3d27175996681b57d35c734fba480b41f9ec61f",
+    "per_question_ndcg10_by_failure_severity_seed.parquet": "e97dfee017f2279b49d11d8db87bd62301560d3e28b8a696fcdd251a845b816c",
+    "question_ndcg10_drop_by_severity.parquet": "f13726e0902392219a247c5e5cfdbaadcfef2f62a201c7bf27f8456151ff6644",
+    "question_vulnerability_clustering.parquet": "0a036e2d3c047d10a80513b5a57d467b8071342a93d9c0a0247a047ea7a7dad4",
+    "replacement_model_difference_table.parquet": "4d91d5d26f5dbcb55bbac32ba9ba6ab81ac06c12234b7718c9a333895f451694",
+    "share_of_windows_with_significant_ndcg10_drop_by_severity.parquet": "39eea40f9c4c9168362be9850c7b0fc91f664f117f9e3269770caa4296204d33",
+    "spearman_statistic_vs_window_mean_ndcg10_drop.parquet": "44281a3a93d9c0738d63ef2f63753617c13b08b7bd9ccb9bd484a6e7acba5e08",
+    "statistic_all_test_questions_vs_validation_reference_by_severity.parquet": "29ff557aaa87348209f0eec030d2e5fce9a7ec33156ff4b73b6f915592b53f77",
+    "window_bootstrap_ci_vs_mean_ndcg10_drop.parquet": "829e59bb1a94c2a478e7d17e858b0769ee8a7b1f7396ed2fe988d1693249618e",
+    "window_mean_question_vulnerability_by_label_per_window.parquet": "7d9c7dc06e884f3bfe79cfe6af12b12fa9f2ae52b0e0f323514b597411d392e9",
+    "window_mean_question_vulnerability_by_label_summary.parquet": "f7a4fee35dea749f3c26769fffeae3c9317cb4b06ab39f99542dbffa5b0f6620",
+    "window_p_value_vs_mean_ndcg10_drop.parquet": "53ed6dde5d831952efcb108bc1c7df9535e6b9f4a72a9499407860eec809d427",
+    "window_per_question_ndcg10_differences.parquet": "90106a7738ce3bc6d5a2e2f10d6ef4e9267cc513ae0e25af90e434a667a823b9"
+  },
+  "packages": {
+    "faiss": "1.15.1",
+    "numpy": "2.5.4",
+    "pandas": "3.1.0",
+    "python": "3.14.6",
+    "sentence-transformers": "6.2.0",
+    "torch": "2.15.0"
+  },
+  "python_executable": "/Users/Shared/github_shared/sph_f1_injector/Untitled/.venv/bin/python",
+  "run_id": "16f99a9a85d4",
+  "tables": {
+    "auroc_statistic_harmful_vs_negative_windows_by_min_ndcg10_drop": {
+      "seconds": 379.190141209001,
+      "status": "written"
+    },
+    "auroc_statistic_harmful_vs_negative_windows_by_severity": {
+      "seconds": 882.211552333003,
+      "status": "written"
+    },
+    "check_mean_window_ndcg10_drop_against_reference": {
+      "seconds": 0.01762662499822909,
+      "status": "written"
+    },
+    "mean_ndcg10_drop_all_test_questions_by_severity": {
+      "seconds": 0.2933970829981263,
+      "status": "written"
+    },
+    "median_seconds_per_statistic_evaluation": {
+      "seconds": 0.0015711250016465783,
+      "status": "written"
+    },
+    "per_question_ndcg10_by_failure_severity_seed": {
+      "seconds": 12.935078291000536,
+      "status": "written"
+    },
+    "question_ndcg10_drop_by_severity": {
+      "seconds": 0.01169737500094925,
+      "status": "written"
+    },
+    "question_vulnerability_clustering": {
+      "seconds": 16.48138574999757,
+      "status": "written"
+    },
+    "replacement_model_difference_table": {
+      "seconds": 4.429775291999249,
+      "status": "written"
+    },
+    "share_of_windows_with_significant_ndcg10_drop_by_severity": {
+      "seconds": 0.005368458998418646,
+      "status": "written"
+    },
+    "spearman_statistic_vs_window_mean_ndcg10_drop": {
+      "seconds": 43.73079045900158,
+      "status": "written"
+    },
+    "statistic_all_test_questions_vs_validation_reference_by_severity": {
+      "seconds": 874.493266292,
+      "status": "written"
+    },
+    "window_bootstrap_ci_vs_mean_ndcg10_drop": {
+      "seconds": 4.331479042000865,
+      "status": "written"
+    },
+    "window_mean_question_vulnerability_by_label": {
+      "seconds": 0.07848241600004258,
+      "status": "written"
+    },
+    "window_p_value_vs_mean_ndcg10_drop": {
+      "seconds": 0.005138249998708488,
+      "status": "written"
+    },
+    "window_per_question_ndcg10_differences": {
+      "seconds": 69.94736920800278,
+      "status": "written"
+    }
+  }
+}

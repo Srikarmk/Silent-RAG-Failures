@@ -12,6 +12,7 @@ import dataclasses
 import numpy as np
 
 from silent_rag.inject.base import Injector, register
+from silent_rag.inject.model_check import check_replacement_model
 from silent_rag.pipeline import Retriever, is_commit_hash
 from silent_rag.types import RetrievalState
 
@@ -54,6 +55,7 @@ def like(retriever_cls, retriever, model: str | None = None, **changes):
 class PartialUpgrade(Injector):
     name = "F1_partial_upgrade"
     retriever_cls = Retriever  # tests swap in one with a fake encoder
+    model_checker = staticmethod(check_replacement_model)  # reads the local HF cache; tests swap in a fake
 
     def __init__(self, alt_model: str, alt_revision: str):
         self.alt_model = alt_model
@@ -62,10 +64,23 @@ class PartialUpgrade(Injector):
     @classmethod
     def check_config(cls, params: dict, run_cfg: dict) -> None:
         check_alt_model(params, run_cfg, "F1")
+        # last, after the checks that need no files: Normalize, dimension and prefixes from the local cache
+        cls.model_checker(params["alt_model"], params["alt_revision"], run_cfg["model"], run_cfg["revision"])
+
+    def build_replacement_model_retriever(self, baseline_retriever, query_prefix: str | None = None):
+        """A retriever for the replacement model with the baseline retriever's settings.
+
+        Copies normalize, max_seq_length, batch_size and device; uses alt_model and
+        alt_revision; never copies the encoder (that is the baseline model). query_prefix=None
+        inherits the baseline's prefix; a string replaces it, and "" clears it. F1 itself only
+        encodes documents, so the prefix matters only to callers that encode questions with
+        the replacement model (e.g. bge needs its own query instruction).
+        """
+        changes = {} if query_prefix is None else {"query_prefix": query_prefix}
+        return like(self.retriever_cls, baseline_retriever, self.alt_model, revision=self.alt_revision, **changes)
 
     def attach(self, retriever, state: RetrievalState) -> None:
-        # same settings as the clean retriever, only the model changes
-        alt = like(self.retriever_cls, retriever, self.alt_model, revision=self.alt_revision)
+        alt = self.build_replacement_model_retriever(retriever)
         vecs, _ = alt.embed_texts("f1_alt", state.doc_ids, state.doc_texts)
         if vecs.shape[1] != state.doc_embeddings.shape[1]:
             raise ValueError(
@@ -74,6 +89,19 @@ class PartialUpgrade(Injector):
             )
         self.alt_embeddings = vecs
         self.attached_doc_ids = list(state.doc_ids)
+
+    @staticmethod
+    def replaced_document_row_indices(n_documents: int, severity: float, seed: int) -> np.ndarray:
+        """Index rows whose vectors apply() replaces with the replacement model's, in permutation order.
+
+        One permutation per seed, cut at round(severity * n_documents): within a seed, a higher
+        severity replaces a superset of rows (the lower severity's rows are a prefix).
+        """
+        return np.random.default_rng(seed).permutation(n_documents)[: round(severity * n_documents)]
+
+    def modified_document_row_indices(self, n_documents: int, severity: float, seed: int) -> np.ndarray:
+        """Rows apply(state, severity, seed) changes, for per-question tables."""
+        return self.replaced_document_row_indices(n_documents, severity, seed)
 
     def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState:
         if not hasattr(self, "alt_embeddings"):
@@ -84,8 +112,7 @@ class PartialUpgrade(Injector):
             if n != len(self.attached_doc_ids):
                 msg += f", state has {n} rows but attach() was given {len(self.attached_doc_ids)}"
             raise ValueError(msg)
-        # one permutation per seed, cut at the severity: higher severities upgrade a superset of rows
-        rows = np.random.default_rng(seed).permutation(n)[: round(severity * n)]
+        rows = self.replaced_document_row_indices(n, severity, seed)
         emb = state.doc_embeddings.copy()
         emb[rows] = self.alt_embeddings[rows]
         return dataclasses.replace(state, doc_embeddings=emb)
