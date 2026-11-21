@@ -18,8 +18,24 @@ def test_features_by_hand():
     f = score_features(obs([np.linspace(0.9, 0.0, 10), np.full(10, 0.5)]))
     assert list(f.columns) == FEATURES
     assert list(f.index) == ["q0", "q1"]
-    np.testing.assert_allclose(f.loc["q0"], [0.9, 0.1, 0.45, np.std(np.linspace(0.9, 0.0, 10))], atol=1e-6)
-    np.testing.assert_allclose(f.loc["q1"], [0.5, 0.0, 0.5, 0.0], atol=1e-6)
+    sd = np.std(np.linspace(0.9, 0.0, 10))
+    np.testing.assert_allclose(f.loc["q0"], [0.9, 0.1, 0.45, sd, 0.45, 0.1 / sd, 0.45 / sd], atol=1e-6)
+    # all ten equal: std10 is 0, and the ratios are defined as 0 rather than nan
+    np.testing.assert_allclose(f.loc["q1"], [0.5, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_scale_free_features_ignore_a_shift_and_a_stretch():
+    rng = np.random.default_rng(0)
+    rows = np.sort(rng.uniform(0.3, 0.8, (20, 10)), axis=1)[:, ::-1]
+    f = score_features(obs(rows))
+    shifted = score_features(obs(rows + 0.15))
+    stretched = score_features(obs(1.7 * rows + 0.15))
+    np.testing.assert_allclose(shifted["margin"], f["margin"], atol=1e-5)
+    for col in ("gap_z", "margin_z"):
+        np.testing.assert_allclose(shifted[col], f[col], rtol=1e-4)
+        np.testing.assert_allclose(stretched[col], f[col], rtol=1e-4)
+    # the level features do move, which is what a full model swap trips
+    assert (shifted["top1"] - f["top1"]).abs().min() > 0.1
 
 
 def test_deeper_scores_dont_change_the_features():
