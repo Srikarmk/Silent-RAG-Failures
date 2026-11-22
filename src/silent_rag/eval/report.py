@@ -10,17 +10,22 @@ table, so any min_drop works on one run):
 2. AUROC for every detector and harmful failure, with a 95% CI from resampling seeds
    (`bootstrap_auroc_ci`). Negatives are clean windows plus controls that stayed
    harmless, as in `compute_auroc`. A one-seed run has no CI.
-3. Each detector's false-alarm rate on every negative control, at the threshold that
-   gives 5% false alarms on this run's clean windows, and the earliest severity it
-   reliably detects at that threshold.
+3. Each detector's false alarms on clean windows and on every negative control, and the
+   earliest severity it reliably detects, at a threshold set for 5% false alarms on
+   clean windows. Leave-one-seed-out (`thresholds.out_of_seed_thresholds`): each seed is
+   scored against a threshold set on the other seeds' clean windows, never its own, and
+   the table gives the mean over seeds and the worst seed. Needs two or more seeds.
 
 Before those, the cost of one check per detector (median, p90 and max of `cost_s`, and
 `cost_usd` per check), which doesn't depend on min_drop. A detector that caches its work
 reports what the check takes uncached; NaN means that time wasn't recorded.
 
-The threshold is set on the clean windows of the same run, so (3) says how a detector
-calibrated on its own clean traffic behaves, which needs no labels. Use one run_id per
-report; a table with several is refused.
+Thresholds come from clean windows only, so (3) says how a detector calibrated on clean
+traffic behaves, which needs no labels. Measured in-sample, the clean false-alarm rate
+would be 5% by construction and the spread between seeds (#91) would vanish; the worst
+seed is the number a single deployment should plan for. The `threshold` column is the
+one to deploy, set on every seed's clean windows. Use one run_id per report; a table with
+several is refused.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from silent_rag.eval.detector_scoring import (
     earliest_detectable_severity,
     false_alarm_rate,
 )
+from silent_rag.eval.thresholds import out_of_seed_thresholds
 
 
 def relabel(df: pd.DataFrame, min_drop: float, alpha: float = 0.05) -> pd.DataFrame:
@@ -71,20 +77,35 @@ def auroc_table(df: pd.DataFrame, n_boot: int = 1000) -> pd.DataFrame:
 
 
 def alarm_table(df: pd.DataFrame, rate: float = 0.05) -> pd.DataFrame:
+    """False alarms (mean over seeds and worst seed) and earliest detection, each seed
+    scored against a threshold set on the other seeds' clean windows."""
+    lines = out_of_seed_thresholds(df, rate)
+    # alarm = score > threshold, so shifting each row by its seed's threshold lets the
+    # single-threshold helpers below apply per-seed thresholds at 0
+    shift = pd.Series(list(zip(df.detector.astype(str), df.seed)), index=df.index).map(lines)
+    shifted = df.assign(score=df.score - shift)
     controls = sorted(df.loc[~df.expected_harmful & df.failure.ne("clean"), "failure"].unique())
     failures = sorted(df.loc[df.expected_harmful & df.failure.ne("clean"), "failure"].unique())
     rows = []
     for det in sorted(df.detector.unique()):
         d = df[df.detector.eq(det)]
-        t = float(np.quantile(d.loc[d.failure.eq("clean"), "score"], 1 - rate))
-        row = {"detector": det, "threshold": t}
-        for c in controls:
-            try:
-                row[f"false alarms: {c}"] = false_alarm_rate(df, det, t, failure=c)
-            except ValueError:  # every window of this control turned out harmful
-                row[f"false alarms: {c}"] = np.nan
+        row = {"detector": det, "threshold": float(np.quantile(d.loc[d.failure.eq("clean"), "score"], 1 - rate))}
+        for c in ["clean", *controls]:
+            per_seed = []
+            for _, g in shifted[shifted.detector.eq(det)].groupby("seed"):
+                if c == "clean":
+                    w = g[g.failure.eq("clean")]
+                    per_seed.append(float((w.score > 0).mean()) if len(w) else np.nan)
+                    continue
+                try:
+                    per_seed.append(false_alarm_rate(g, det, 0.0, failure=c))
+                except ValueError:  # no windows of this control, or every one did harm
+                    per_seed.append(np.nan)
+            known = [r for r in per_seed if not np.isnan(r)]
+            row[f"false alarms: {c}"] = float(np.mean(known)) if known else np.nan
+            row[f"worst seed: {c}"] = float(max(known)) if known else np.nan
         for f in failures:
-            row[f"earliest: {f}"] = earliest_detectable_severity(df, det, f, t)
+            row[f"earliest: {f}"] = earliest_detectable_severity(shifted, det, f, 0.0)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -138,8 +159,12 @@ def report(df: pd.DataFrame, min_drops=(0.0, 0.02, 0.06), n_boot: int = 1000) ->
         wide = a.assign(cell=cell).pivot(index="detector", columns="failure", values="cell").reset_index()
         out.append("\n### AUROC (95% seed CI)\n")
         out.append(markdown(wide))
-        if (~d.expected_harmful & d.failure.ne("clean")).any():
-            out.append("\n### False alarms and earliest detection, at 5% false alarms on clean windows\n")
+        if d.seed.nunique() < 2:
+            out.append("\n### False alarms\n\nNeeds two or more seeds: each seed is scored against "
+                       "a threshold set on the other seeds' clean windows.\n")
+        else:
+            out.append("\n### False alarms and earliest detection, at 5% false alarms on clean windows "
+                       "(leave one seed out: mean over seeds and worst seed)\n")
             out.append(markdown(alarm_table(d)))
     return "\n".join(out) + "\n"
 

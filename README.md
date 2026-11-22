@@ -153,7 +153,7 @@ pytest
 
 On Windows (PowerShell), activate with `.venv\Scripts\Activate.ps1` instead of `source .venv/bin/activate`. If PowerShell refuses to run the script, allow it for the current session first with `Set-ExecutionPolicy -Scope Process RemoteSigned`.
 
-On a Mac, faiss and torch together segfault (exit 139, no error message) unless OpenMP runs one thread. `import silent_rag` sets `OMP_NUM_THREADS=1` and `KMP_DUPLICATE_LIB_OK=TRUE` for you on macOS, unless you've set them yourself. A script or notebook that imports faiss or torch *before* `silent_rag` still needs them set first.
+On a Mac, faiss and torch together segfault (exit 139, no error message) unless OpenMP runs one thread. `import silent_rag` sets `OMP_NUM_THREADS=1` and `KMP_DUPLICATE_LIB_OK=TRUE` for you on macOS, unless you've set them yourself. That also limits torch to one thread, so the first embedding of a corpus is slower than it could be; it's how every run so far was made. A script or notebook that imports faiss or torch *before* `silent_rag` still needs them set first.
 
 **Run**
 
@@ -165,7 +165,7 @@ python -m silent_rag.run --config configs/final.yaml --final   # held-out run, S
 python -m silent_rag.eval.report results/dev.parquet           # the tables, as Markdown
 ```
 
-`configs/dev.yaml` took 26 minutes from a fresh clone with empty caches (M5 Pro, CPU), downloads included. The report prints, for each `min_drop` (0, 0.02 and 0.06 by default, recomputed from the table): how often each condition is harmful, AUROC for every detector and failure with 95% seed CIs, and each detector's false alarms on the negative controls and earliest detected severity, at the threshold that gives 5% false alarms on the run's clean windows. `--out report.md` writes it to a file. CI runs `configs/smoke.yaml` and the report on every pull request, on a fresh Ubuntu machine.
+`configs/dev.yaml` took 26 minutes from a fresh clone with empty caches (M5 Pro, CPU), downloads included. The report prints, for each `min_drop` (0, 0.02 and 0.06 by default, recomputed from the table): how often each condition is harmful, AUROC for every detector and failure with 95% seed CIs, and each detector's false alarms on clean windows and the negative controls, with the earliest detected severity, at a threshold set for 5% false alarms on clean windows. That threshold is set leave-one-seed-out, so each seed is scored against the other seeds' clean windows; the table gives the mean over seeds and the worst seed. `--out report.md` writes it to a file. CI runs `configs/smoke.yaml` and the report on every pull request, on a fresh Ubuntu machine; on a pull request a failure there (usually a Hub download) is a warning, on main it fails.
 
 Datasets (`nfcorpus`, `scifact`, `fiqa`) download from the Hugging Face Hub at pinned revisions. Corpus embeddings are cached under `cache/embeddings/` (or `$SILENT_RAG_CACHE/embeddings/`), keyed on the model, its revision, the settings that change the vectors and the corpus text itself, so only the first run of a setup embeds the corpus. The runner refuses SciFact and FiQA unless `--final` is passed.
 

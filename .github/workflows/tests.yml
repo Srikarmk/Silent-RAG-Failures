@@ -21,9 +21,12 @@ jobs:
 
   # The real pipeline end to end on a machine that isn't ours (#34): download NFCorpus
   # and two models, embed, inject, detect, and build the report. Not a result, a check
-  # that a fresh checkout runs.
+  # that a fresh checkout runs. It downloads ~180 MB from the Hugging Face Hub, so on a
+  # pull request a Hub outage shows as a warning instead of failing an unrelated PR;
+  # on main it still fails.
   smoke:
     runs-on: ubuntu-latest
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

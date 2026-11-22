@@ -73,3 +73,29 @@ def test_cost_table_counts_unknown_times():
     t = R.cost_table(df).set_index("detector")
     assert t.loc["b", "median ms"] == pytest.approx(2.0) and t.loc["b", "unknown"] == 3
     assert t.loc["a", "unknown"] == 0
+
+
+def test_false_alarms_are_out_of_seed_and_show_the_worst_seed():
+    # seed 2's clean scores sit higher (an unlucky reference window): in-sample its
+    # windows would share one 95th percentile with the others and look like 5%
+    df = R.relabel(table(seeds=(0, 1, 2, 3), trials=40), 0.02)
+    df.loc[df.detector.eq("a") & df.seed.eq(2) & df.failure.isin(["clean", "H_y"]), "score"] += 2.0
+    t = R.alarm_table(df).set_index("detector")
+    assert t.loc["a", "worst seed: clean"] > 0.5
+    assert t.loc["a", "false alarms: clean"] < t.loc["a", "worst seed: clean"]
+    assert t.loc["a", "worst seed: H_y"] > 0.5
+    assert t.loc["a", "earliest: F1_x"] == 0.5
+
+
+def test_a_seed_is_never_scored_against_its_own_windows():
+    from silent_rag.eval import thresholds
+
+    df = table(seeds=(0, 1), trials=20)
+    lines = thresholds.out_of_seed_thresholds(df)
+    clean = df[df.failure.eq("clean") & df.detector.eq("a")]
+    assert lines[("a", 0)] == pytest.approx(np.quantile(clean[clean.seed == 1].score, 0.95))
+
+
+def test_one_seed_report_says_false_alarms_need_more_seeds():
+    text = R.report(table(seeds=(0,)), min_drops=(0.02,), n_boot=50)
+    assert "Needs two or more seeds" in text
