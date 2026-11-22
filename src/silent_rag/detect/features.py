@@ -11,6 +11,13 @@ Features, from each query's retrieved scores (sorted high to low):
 - mean10: mean of the top 10
 - std10: std of the top 10 (population, ddof=0)
 
+Scale-free versions (#70), for telling a mix of models apart from a whole system that
+moved to a model whose scores sit higher or lower:
+- margin: top1 - mean10. Unchanged if every score of a query moves by the same amount
+- gap_z: gap / std10, and margin_z: margin / std10. Also unchanged if the scores are
+  stretched, i.e. under any a * score + b with a > 0. A query whose top 10 are all
+  equal (std10 = 0) gets 0 for both
+
 Only the first 10 columns are used even if topk_scores is deeper, so the
 features don't change if we start logging more scores later.
 """
@@ -26,7 +33,7 @@ from silent_rag.detect.base import Detector, register
 from silent_rag.types import Observation
 
 DEPTH = 10
-FEATURES = ["top1", "gap", "mean10", "std10"]
+FEATURES = ["top1", "gap", "mean10", "std10", "margin", "gap_z", "margin_z"]
 
 
 def score_features(obs: Observation) -> pd.DataFrame:
@@ -44,12 +51,21 @@ def score_features(obs: Observation) -> pd.DataFrame:
         raise ValueError("topk_scores has non-finite values in the top 10")
     if (np.diff(top, axis=1) > 1e-6).any():
         raise ValueError("topk_scores has to be sorted high to low per query")
+    gap, mean10, std10 = top[:, 0] - top[:, 1], top.mean(axis=1), top.std(axis=1)
+    margin = top[:, 0] - mean10
+
+    def per_std(x):
+        return np.divide(x, std10, out=np.zeros_like(x), where=std10 > 0)
+
     return pd.DataFrame(
         {
             "top1": top[:, 0],
-            "gap": top[:, 0] - top[:, 1],
-            "mean10": top.mean(axis=1),
-            "std10": top.std(axis=1),
+            "gap": gap,
+            "mean10": mean10,
+            "std10": std10,
+            "margin": margin,
+            "gap_z": per_std(gap),
+            "margin_z": per_std(margin),
         },
         index=pd.Index(list(obs.query_ids), name="query_id"),
     )[FEATURES]
@@ -78,6 +94,80 @@ class FeatureDrift(Detector):
 
     @abstractmethod
     def compare(self, reference: np.ndarray, current: np.ndarray) -> float: ...
+
+    def statistic(self, reference: np.ndarray, current: np.ndarray) -> float:
+        """The detector's statistic as a function of the two samples and nothing else.
+
+        The permutation test calls this on reshuffled halves, so it must not use
+        anything fit() stored. On the fitted reference it has to equal compare().
+        Detectors whose compare() already depends only on its arguments inherit this.
+        """
+        return self.compare(reference, current)
+
+
+def permutation_p_value(statistic, reference: np.ndarray, current: np.ndarray,
+                        permutations: int, rng: np.random.Generator) -> float:
+    """Upper-tail permutation p-value of statistic(reference, current) (#73).
+
+    Pools the two samples, reshuffles, splits back into the original sizes and
+    recomputes. p = (1 + number of reshuffles at least as large as the observed
+    statistic) / (permutations + 1), so it is never 0 and its smallest value is
+    1 / (permutations + 1).
+
+    The null is that the reference and window values are exchangeable: one pool,
+    split at random. A small p says the window's values differ from the
+    reference's. It says nothing about whether retrieval got worse.
+    """
+    reference = np.asarray(reference, dtype=float)
+    current = np.asarray(current, dtype=float)
+    observed = float(statistic(reference, current))
+    pooled = np.concatenate([reference, current])
+    n = len(reference)
+    # a reshuffle that reproduces the observed split can differ from it by float noise
+    floor = observed - 1e-12 * max(1.0, abs(observed))
+    hits = 0
+    for _ in range(permutations):
+        shuffled = rng.permutation(pooled)
+        hits += float(statistic(shuffled[:n], shuffled[n:])) >= floor
+    return (1 + hits) / (permutations + 1)
+
+
+class Permutation:
+    """Mixin that turns a FeatureDrift detector into its permutation test (#73).
+
+    score() is 1 - p, so higher still means "more likely something changed" and an
+    alarm at level alpha is score > 1 - alpha. `permutations` sets the resolution of
+    p; the default 999 gives steps of 0.001.
+
+    Use it for thresholding, not for ranking: 1 - p saturates at
+    1 - 1 / (permutations + 1) for any clear shift, so AUROC should keep coming from
+    the plain statistic. The same reshuffles are used for every window (fixed `seed`),
+    so results are reproducible.
+    """
+
+    def __init__(self, permutations: int = 999, seed: int = 0, **kwargs):
+        if isinstance(permutations, bool) or not isinstance(permutations, int) or permutations < 1:
+            raise ValueError(f"permutations has to be a positive integer, got {permutations!r}")
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            raise ValueError(f"seed has to be a non-negative integer, got {seed!r}")
+        super().__init__(**kwargs)
+        self.permutations = permutations
+        self.seed = seed
+
+    def p_value(self, window: Observation) -> float:
+        if not hasattr(self, "reference_"):
+            raise RuntimeError(f"{self.name} needs fit(reference) before it can score")
+        rng = np.random.default_rng(self.seed)
+        return permutation_p_value(self.statistic, self.reference_, self.values(window), self.permutations, rng)
+
+    def score(self, window: Observation) -> float:
+        return 1.0 - self.p_value(window)
+
+
+def register_permutation(base: type[FeatureDrift]) -> type[FeatureDrift]:
+    """Registers `<base.name>_perm`: the same feature and statistic, scored by 1 - p."""
+    attrs = {"name": f"{base.name}_perm", "__module__": base.__module__, "__doc__": Permutation.__doc__}
+    return register(type(f"{base.__name__}_perm", (Permutation, base), attrs))
 
 
 def register_per_feature(base: type[FeatureDrift], prefix: str) -> dict[str, type[FeatureDrift]]:

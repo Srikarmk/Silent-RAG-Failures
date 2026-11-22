@@ -1,6 +1,7 @@
 import dataclasses
 
 import numpy as np
+import pandas as pd
 import pytest
 import yaml
 
@@ -454,3 +455,44 @@ def test_config_with_a_repeated_key_is_rejected(tmp_path, monkeypatch):
 
 def test_duplicate_datasets_run_once():
     assert runner.check_datasets(["nfcorpus", "NFCorpus", "BeIR/nfcorpus"], final=False) == ["nfcorpus"]
+
+
+# running seeds in parts
+
+
+@pytest.fixture
+def toy_plugins(monkeypatch):
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+
+
+def run_part(cfg, only_seeds=None):
+    base = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2}
+    return runner.run({**base, **cfg}, loader=lambda name: toy_dataset(), make_retriever=fake_retriever,
+                      only_seeds=only_seeds)
+
+
+def test_parts_on_disjoint_seeds_merge_into_the_full_run(toy_plugins):
+    cfg = {"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name], "seeds": [0, 1, 2]}
+    full = run_part(cfg)
+    parts = [run_part(cfg, only_seeds=[0, 2]), run_part(cfg, only_seeds=[1])]
+    assert {p.run_id.unique()[0] for p in parts} == {full.run_id.unique()[0]}
+    merged = runner.merge_parts(parts)
+    expected = runner.merge_parts([full])
+    pd.testing.assert_frame_equal(merged.drop(columns="cost_s"), expected.drop(columns="cost_s"))
+
+
+@pytest.mark.parametrize("only", [[3], [], [0, 5]])
+def test_only_seeds_outside_the_config_are_refused(toy_plugins, only):
+    with pytest.raises(SystemExit, match="non-empty subset"):
+        run_part({"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name], "seeds": [0, 1]}, only)
+
+
+def test_merge_refuses_a_seed_in_two_parts_or_two_configs(toy_plugins):
+    cfg = {"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name], "seeds": [0, 1]}
+    a = run_part(cfg, only_seeds=[0])
+    with pytest.raises(SystemExit, match="seed 0 is in parts 0 and 1"):
+        runner.merge_parts([a, a])
+    other = run_part({**cfg, "trials": 3}, [1])
+    with pytest.raises(SystemExit, match="different configs"):
+        runner.merge_parts([a, other])

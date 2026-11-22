@@ -2,6 +2,17 @@
 
     python -m silent_rag.run --config configs/dev.yaml
     python -m silent_rag.run --config configs/final.yaml --final
+
+The held-out run, from a frozen commit pushed with its tag so the sidecar's commit can be
+checked against GitHub:
+
+    git tag final-v1 && git push origin final-v1
+    python -m silent_rag.run --config configs/final.yaml --final
+
+or in parts on disjoint seeds, then merged (each part and the merge write a sidecar):
+
+    python -m silent_rag.run --config configs/final.yaml --final --only-seeds 0,1 --out results/final_p1.parquet
+    python -m silent_rag.run --merge results/final_p*.parquet --out results/final.parquet
 """
 
 from __future__ import annotations
@@ -12,6 +23,10 @@ import importlib
 import inspect
 import json
 import pkgutil
+import platform
+import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -29,7 +44,7 @@ from silent_rag.types import Observation
 # filled in before anything reads the config, so run_id doesn't depend on whether a default was spelled out
 DEFAULTS = {"k": 10, "seed": 0, "alpha": 0.05, "min_drop": 0.0}
 
-DEV_DATASETS = {"nfcorpus"}
+DEV_DATASETS = {"nfcorpus", "mldr_en"}  # MLDR: long docs for F3 (#12), not held out
 HELD_OUT = {"scifact", "fiqa"}
 ALIASES = {"fiqa-2018": "fiqa"}
 
@@ -65,6 +80,60 @@ def check_final_revision(run_cfg: dict, final: bool) -> None:
             "--final needs the clean model's revision pinned to a 40-character lowercase "
             f"commit hash, got {run_cfg['revision']!r}"
         )
+
+
+ROOT = Path(__file__).resolve().parents[2]
+FINAL_TAG = re.compile(r"final-v[0-9]+")
+FROZEN = ("src", "configs")  # what decides the numbers: the code and every config, weights included
+
+
+def git(*args: str, repo: Path = ROOT) -> str:
+    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"--final needs the git checkout the code runs from; `git {' '.join(args)}` failed: "
+                         f"{out.stderr.strip()}")
+    return out.stdout.strip()
+
+
+def check_frozen(config_path: str, out: Path, git=git, root: Path = ROOT) -> dict:
+    """The held-out run happens once (#29), so it has to run from frozen, tagged code.
+
+    Checked in the checkout this code was imported from, not the current directory, so
+    a worktree or a PYTHONPATH can't run other code than the one that's tagged:
+    - nothing under src/ or configs/ differs from HEAD, untracked files included
+    - the config is a committed file under configs/
+    - HEAD carries a final-v<N> tag
+    - the output file doesn't exist yet, so a second run can't overwrite the first.
+      This is per output path: it stops an accidental overwrite, not a rerun under a
+      different --out
+    Returns what the sidecar records about the code."""
+    dirty = git("status", "--porcelain", "--untracked-files=all", "--", *FROZEN)
+    if dirty:
+        raise SystemExit(f"--final needs src/ and configs/ committed, these differ from HEAD:\n{dirty}")
+    cfg = Path(config_path).resolve()
+    if not cfg.is_relative_to(root / "configs"):
+        raise SystemExit(f"--final needs the config under {root / 'configs'}, got {cfg}")
+    tags = [t for t in git("tag", "--points-at", "HEAD").split() if FINAL_TAG.fullmatch(t)]
+    if not tags:
+        raise SystemExit("--final needs HEAD tagged final-v<N> (e.g. `git tag final-v1`); tag the frozen commit first")
+    for path in (out, out.with_suffix(".json")):
+        if path.exists():
+            raise SystemExit(f"{path} already exists; the held-out run happens once, refusing to overwrite it")
+    return {"commit": git("rev-parse", "HEAD"), "tag": sorted(tags)[-1],
+            "config": str(cfg.relative_to(root)), "config_sha1": hashlib.sha1(cfg.read_bytes()).hexdigest()}
+
+
+def environment() -> dict:
+    from importlib.metadata import PackageNotFoundError, version
+
+    def v(pkg):
+        try:
+            return version(pkg)
+        except PackageNotFoundError:
+            return None
+
+    return {"python": sys.version.split()[0], "platform": platform.platform(), "machine": platform.machine(),
+            "packages": {p: v(p) for p in ("numpy", "torch", "sentence-transformers", "faiss-cpu", "scikit-learn", "pandas")}}
 
 
 def load_plugins() -> None:
@@ -155,6 +224,9 @@ def failure_params(failures) -> dict[str, tuple[str, list, dict]]:
         if key in others:
             raise SystemExit(f"{label}: is the registered name of {others[key]!r}, pick another label")
         check_severities({label: sevs})
+        allowed = INJECTORS[name].severities
+        if allowed is not None and any(s not in allowed for s in sevs):
+            raise SystemExit(f"{label}: {name} only runs at severities {list(allowed)}, got {sevs}")
         # bind, don't construct: the runner makes exactly one injector per label, later
         try:
             inspect.signature(INJECTORS[name]).bind(**params)
@@ -217,6 +289,36 @@ def window_queries(retriever, clean, damaged, idx) -> np.ndarray:
             "injector changed query_texts but kept the clean query_embeddings, set them to None"
         )
     return damaged.query_embeddings[idx]
+
+
+def asked_queries(clean, damaged, idx, reference_ids: set[str]) -> list[str]:
+    """The query id at each window position after the injector ran.
+
+    An injector that shifts traffic (a query shift, a control that oversamples a topic)
+    may put another query of the dataset at a position, with its text. Ground truth then
+    pairs the question actually asked with its own clean result. A question from outside
+    the dataset has no clean result and no qrels, which is the open reference-standard
+    question in #13, so it is refused rather than scored against the wrong question.
+    """
+    clean_text = dict(zip(clean.query_ids, clean.query_texts))
+    asked = [damaged.query_ids[i] for i in idx]
+    unknown = sorted({q for q in asked if q not in clean_text})
+    if unknown:
+        raise RuntimeError(
+            f"injector asked {len(unknown)} queries that aren't in the dataset (e.g. {unknown[0]!r}); "
+            "they have no qrels, so there is no ground truth for them yet (#13)"
+        )
+    leaked = sorted(set(asked) & reference_ids)
+    if leaked:
+        raise RuntimeError(
+            f"injector asked {len(leaked)} reference-window queries (e.g. {leaked[0]!r}); "
+            "use the ids in Injector.query_pool, the detectors were fit on the others"
+        )
+    wrong = [i for i in idx if damaged.query_texts[i] != clean_text[damaged.query_ids[i]]]
+    if wrong:
+        i = wrong[0]
+        raise RuntimeError(f"position {i} has query id {damaged.query_ids[i]!r} but another query's text")
+    return asked
 
 
 def read_only(state):
@@ -292,10 +394,12 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
 
     clean_deep = deep(state, clean_q)
     clean_ndcg = per_query_ndcg(clean_ids, state.query_ids, ds.qrels, k)
+    clean_by_id = dict(zip(state.query_ids, clean_ndcg))
 
     # The reference window the detectors are fit on never overlaps the windows they score.
     order = np.random.default_rng(seed).permutation(len(state.query_ids))
     ref_idx, pool = order[:window_size], order[window_size:]
+    ref_ids = {state.query_ids[i] for i in ref_idx}
     if len(pool) < window_size:
         raise SystemExit(f"{ds.name}: {len(order)} queries is too few for two windows of {window_size}")
 
@@ -313,6 +417,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
     made = {}
     for label, (name, _, kwargs) in failures.items():
         made[label] = INJECTORS[name](**kwargs)
+        # the queries an injector may move traffic to: never the reference window's
+        made[label].query_pool = [state.query_ids[i] for i in pool]
         made[label].attach(retriever, state)
 
     conditions = [("clean", 0.0)] + [(f, s) for f, (_, sevs, _) in failures.items() for s in sevs]
@@ -336,9 +442,10 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                 )
                 deep_scores = deep(damaged, q_emb)
 
-            # qrels are keyed by the clean query ids. What this means for F4 is still open (#13).
-            ndcg = per_query_ndcg(topk_ids, [state.query_ids[i] for i in idx], ds.qrels, k)
-            drop, p = paired_bootstrap(clean_ndcg[idx], ndcg, seed=trial)
+            # ground truth pairs each question actually asked with its own clean result (#13)
+            asked = asked_queries(state, damaged, idx, ref_ids)
+            ndcg = per_query_ndcg(topk_ids, asked, ds.qrels, k)
+            drop, p = paired_bootstrap(np.array([clean_by_id[q] for q in asked]), ndcg, seed=trial)
             window = observe(
                 damaged, idx, topk_ids, topk_scores, q_emb, docs_of(damaged, state, clean_docs), deep_scores
             )
@@ -346,6 +453,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
             for name, det in fitted.items():
                 start = time.perf_counter()
                 score = det.score(window)
+                wall = time.perf_counter() - start
+                uncached = getattr(det, "last_cost_s", None)
                 rows.append(
                     ResultRow(
                         run_id=rid,
@@ -363,7 +472,9 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
                         ndcg_drop=drop,
                         harmful=p < alpha and drop >= min_drop,
                         p_value=p,
-                        cost_s=time.perf_counter() - start,
+                        cost_s=wall if uncached is None else float(uncached),
+                        # API-based detectors report what this check would cost uncached
+                        cost_usd=float(getattr(det, "last_cost_usd", 0.0)),
                     )
                 )
     return rows
@@ -384,9 +495,16 @@ def run_seeds(cfg: dict) -> list[int]:
     return seeds
 
 
-def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
+def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None, only_seeds=None):
+    """only_seeds runs a subset of the config's seeds under the full config's run_id, so
+    parts run in separate processes merge into one run (merge_parts)."""
     datasets = check_datasets(cfg["datasets"], final)
     seeds = run_seeds(cfg)
+    if only_seeds is not None:
+        extra = sorted(set(only_seeds) - set(seeds))
+        if extra or not only_seeds:
+            raise SystemExit(f"only_seeds must be a non-empty subset of the config's seeds {seeds}, got {only_seeds}")
+        seeds = [s for s in seeds if s in set(only_seeds)]
     load_plugins()
     failures = failure_params(cfg.get("failures"))
     params = detector_params(cfg["detectors"])
@@ -408,9 +526,17 @@ def run(cfg: dict, final: bool = False, loader=data.load, make_retriever=None):
         hashed.pop("seed")
     rid = run_id(hashed)
     per_seed = {key: v for key, v in cfg.items() if key != "seeds"}
+    # load every dataset first: checks that need the data run before anything is embedded
+    loaded = {name: loader(name) for name in datasets}
+    for name, ds in loaded.items():
+        for label, (injector, sevs, kwargs) in failures.items():
+            try:
+                INJECTORS[injector].check_dataset(kwargs, sevs, ds)
+            except ValueError as e:
+                raise SystemExit(f"{label} on {name}: {e}") from None
     rows = []
     for name in datasets:
-        ds, retriever = loader(name), make_retriever()
+        ds, retriever = loaded[name], make_retriever()
         for seed in seeds:
             rows += run_dataset(ds, retriever, {**per_seed, "seed": seed}, failures, rid=rid)
     return to_frame(rows)
@@ -433,13 +559,84 @@ class UniqueKeyLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
+def merge_parts(frames):
+    """Rows from runs of the same config on disjoint seeds, as one table. Refuses parts
+    from different configs or with a seed in two parts, which would double-count it."""
+    import pandas as pd
+
+    frames = list(frames)
+    if not frames:
+        raise SystemExit("nothing to merge")
+    ids = sorted({r for f in frames for r in f["run_id"].unique()})
+    if len(ids) != 1:
+        raise SystemExit(f"parts come from different configs (run_ids {ids})")
+    seen: dict[int, int] = {}
+    for i, f in enumerate(frames):
+        for s in f["seed"].unique():
+            if s in seen:
+                raise SystemExit(f"seed {s} is in parts {seen[s]} and {i}")
+            seen[s] = i
+    return pd.concat(frames, ignore_index=True).sort_values(
+        ["seed", "failure", "severity", "trial", "detector"], kind="stable", ignore_index=True)
+
+
+SIDECAR_CODE = ("commit", "tag", "config", "config_sha1")
+
+
+def merge_sidecars(parts: list[Path], out: Path) -> dict | None:
+    """What a merged run used, from its parts' sidecars. None when no part has one (a dev
+    merge). A --final merge needs every part to have one, all from the same commit, tag
+    and config, and refuses to overwrite an existing result, like check_frozen."""
+    sides = [p.with_suffix(".json") for p in parts]
+    have = [s for s in sides if s.exists()]
+    if not have:
+        return None
+    if len(have) != len(sides):
+        missing = [str(s) for s in sides if not s.exists()]
+        raise SystemExit(f"some parts are --final runs and some aren't; no sidecar for {missing}")
+    recs = [json.loads(s.read_text()) for s in sides]
+    for key in SIDECAR_CODE:
+        values = sorted({str(r.get(key)) for r in recs})
+        if len(values) != 1:
+            raise SystemExit(f"parts ran from different code: {key} is {values}")
+    for path in (out, out.with_suffix(".json")):
+        if path.exists():
+            raise SystemExit(f"{path} already exists; the held-out run happens once, refusing to overwrite it")
+    return {**{k: recs[0][k] for k in SIDECAR_CODE},
+            "run_ids": sorted({i for r in recs for i in r.get("run_ids", [])}),
+            "rows": sum(r.get("rows", 0) for r in recs),
+            "started": min(r["started"] for r in recs), "finished": max(r["finished"] for r in recs),
+            "parts": [{"path": str(p), **{k: v for k, v in r.items() if k not in SIDECAR_CODE}}
+                      for p, r in zip(parts, recs)]}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config")
     parser.add_argument("--final", action="store_true")
     parser.add_argument("--out", help="parquet path, default results/<config name>.parquet")
     parser.add_argument("--list", action="store_true", help="print the registered injectors and detectors")
+    parser.add_argument("--only-seeds", help="comma-separated subset of the config's seeds, for running parts in parallel")
+    parser.add_argument("--merge", nargs="+", metavar="PART", help="merge part parquets into --out instead of running")
     args = parser.parse_args()
+
+    if args.merge:
+        import pandas as pd
+
+        if not args.out:
+            parser.error("--merge needs --out")
+        out, parts = Path(args.out), [Path(p) for p in args.merge]
+        merged = merge_sidecars(parts, out)
+        if args.final and merged is None:
+            parser.error("--final --merge needs the parts' sidecars; run each part with --final")
+        df = merge_parts(pd.read_parquet(p) for p in parts)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(out, index=False)
+        print(f"wrote {len(df)} rows from {len(parts)} parts to {out}")
+        if merged is not None:
+            out.with_suffix(".json").write_text(json.dumps(merged, indent=2))
+            print(f"wrote what the parts used to {out.with_suffix('.json')}")
+        return
 
     if args.list:
         load_plugins()
@@ -452,12 +649,26 @@ def main() -> None:
     with open(args.config) as f:
         cfg = yaml.load(f, Loader=UniqueKeyLoader)
     check_datasets(cfg["datasets"], args.final)
-
-    df = run(cfg, final=args.final)
     out = Path(args.out or f"results/{Path(args.config).stem}.parquet")
+    frozen = check_frozen(args.config, out) if args.final else None
+    started = time.time()
+
+    only = None
+    if args.only_seeds:
+        try:
+            only = [int(x) for x in args.only_seeds.split(",")]
+        except ValueError:
+            parser.error(f"--only-seeds takes comma-separated integers, got {args.only_seeds!r}")
+    df = run(cfg, final=args.final, only_seeds=only)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out, index=False)
     print(f"wrote {len(df)} rows to {out}")
+    if frozen is not None:
+        side = out.with_suffix(".json")
+        side.write_text(json.dumps({**frozen, "run_ids": sorted(df.run_id.unique().tolist()), "rows": len(df),
+                                    "seeds": sorted(int(x) for x in df.seed.unique()),
+                                    "started": started, "finished": time.time(), **environment()}, indent=2))
+        print(f"wrote what the run used to {side}")
 
 
 if __name__ == "__main__":

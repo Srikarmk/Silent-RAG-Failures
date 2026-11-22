@@ -12,12 +12,18 @@ class Injector(ABC):
     - never modify `state` in place, return a new one
     - same (severity, seed) must give the same result
     - severity is the fraction of the corpus or query traffic affected
-    - query positions stay fixed. See RetrievalState for when to reset
-      query_embeddings
+    - the number of queries stays fixed. An injector may put another query
+      of the dataset at a position (a query shift), changing query_ids and
+      query_texts there together, using only ids from `query_pool`. See
+      RetrievalState for when to reset query_embeddings
     """
 
     name: str
-    harmful: bool = True  # False for the H1-H3 harmless changes
+    harmful: bool = True  # False for the harmless changes (negative controls)
+    severities: tuple[float, ...] | None = None  # the only severities that make sense, if not all of (0, 1]
+    # Set by the runner before attach(): the query ids outside the reference window. An
+    # injector that moves traffic to other queries of the dataset may only use these.
+    query_pool: list[str] | None = None
 
     def attach(self, retriever, state: RetrievalState) -> None:
         """Called with the clean retriever and the clean, read-only `state` before any
@@ -33,6 +39,13 @@ class Injector(ABC):
         embedded and before any instance exists. `params` are this label's constructor
         params; `run_cfg` holds the clean `model` and `revision`. Raise ValueError to
         reject. Does nothing by default."""
+
+    @classmethod
+    def check_dataset(cls, params: dict, severities: list[float], dataset) -> None:
+        """Checks that need the data, such as its size: run for every dataset of the run
+        once it is loaded, before anything is embedded, so a setting that can't work on
+        one dataset fails at the start of the run, not after the others have run. Raise
+        ValueError to reject. Does nothing by default."""
 
     @abstractmethod
     def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState: ...
