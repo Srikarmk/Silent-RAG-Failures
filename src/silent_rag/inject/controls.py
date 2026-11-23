@@ -10,6 +10,9 @@ F1 to F5, with `harmful = False`, so every alarm they raise is a false alarm.
   only runs at severity 1.0.
 - H_query_topic_shift: traffic oversamples one topic the corpus can answer. The
   harmless look-alike of F4's out-of-corpus queries (#72).
+- H_query_no_normalize: a `severity` fraction of questions encoded without the
+  Normalize step. Only the question vector's length changes, which scales all of that
+  question's scores by one factor (FAISS wiki, MetricType-and-distances).
 
 Off-topic documents were tried as a control too, but they lower nDCG@10 slightly
 and consistently, so they became the distractor half of F2 (f2_distractors.py).
@@ -147,6 +150,49 @@ class QueryTopicShift(_Attached):
             query_texts=[state.query_texts[j] for j in source],
             query_embeddings=np.asarray(state.query_embeddings)[source],
         )
+
+
+@register
+class QueryWithoutNormalize(_Attached):
+    """A share of questions is encoded by a pipeline without the Normalize step (a
+    hand-written transformers or ONNX encoder that stops after pooling).
+
+    Each changed question keeps its direction and gets a different length, so all of
+    its scores scale by one positive factor. Rankings are unchanged except reorderings
+    among documents whose scores tie at float32 rounding level (e.g. NFCorpus's
+    duplicate MED-1874/MED-2432). nDCG@10 can change only if tied documents carry
+    different relevance labels; on NFCorpus test it was exactly 0 at every severity.
+    The scores the detectors see do change.
+    """
+
+    name = "H_query_no_normalize"
+    harmful = False
+    retriever_cls = Retriever
+
+    @staticmethod
+    def without_normalize(encoder):
+        """The clean encoder's modules minus Normalize (shared, not copied); tests swap this."""
+        from sentence_transformers import SentenceTransformer
+        from sentence_transformers.models import Normalize
+
+        return SentenceTransformer(modules=[m for m in encoder if not isinstance(m, Normalize)], device=encoder.device)
+
+    def attach(self, retriever, state: RetrievalState) -> None:
+        alt = like(self.retriever_cls, retriever, normalize=False, encoder=self.without_normalize(retriever.encoder))
+        self.query_vectors = alt.embed_queries(state.query_texts)
+        self.attached_query_ids = list(state.query_ids)
+        self.attached_doc_ids = list(state.doc_ids)
+
+    def apply(self, state: RetrievalState, severity: float, seed: int) -> RetrievalState:
+        self._check_state(state)
+        if list(state.query_ids) != self.attached_query_ids:
+            raise ValueError(f"{self.name}: state's query_ids don't match the state passed to attach()")
+        # F1's selection over question positions: higher severities change a superset
+        n = len(state.query_ids)
+        rows = np.random.default_rng(seed).permutation(n)[: round(severity * n)]
+        q = np.array(state.query_embeddings, copy=True)
+        q[rows] = self.query_vectors[rows]
+        return dataclasses.replace(state, query_embeddings=q)
 
 
 @register
