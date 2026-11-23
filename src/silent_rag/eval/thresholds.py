@@ -103,6 +103,22 @@ def alarm_rates(df: pd.DataFrame, thresholds: dict, exclude_seeds=(), alpha: flo
     return rows[keep].pivot_table(index=["failure", "severity"], columns="detector", values="alarm", aggfunc="mean")
 
 
+def out_of_seed_thresholds(df: pd.DataFrame, false_alarm: float = FALSE_ALARM) -> pd.Series:
+    """Threshold for each (detector, seed), set on the clean windows of every other seed.
+
+    The one rule for out-of-sample alarm rates: a seed is never scored against a
+    threshold its own clean windows helped set."""
+    clean = df[df.failure.eq("clean")]
+    out = {}
+    for name, g in clean.groupby("detector"):
+        seeds = sorted(g.seed.unique())
+        if len(seeds) < 2:
+            raise ValueError(f"{name}: leave-one-seed-out needs clean windows from at least two seeds")
+        for seed in seeds:
+            out[(str(name), seed)] = float(np.quantile(g[g.seed != seed].score, 1 - false_alarm))
+    return pd.Series(out, name="threshold").rename_axis(["detector", "seed"])
+
+
 def leave_one_seed_out(df: pd.DataFrame, false_alarm: float = FALSE_ALARM) -> pd.DataFrame:
     """For each seed: calibrate on the clean windows of every other seed, then take the
     false-alarm rate on this seed's clean windows. Mean and worst seed per detector.
@@ -110,13 +126,11 @@ def leave_one_seed_out(df: pd.DataFrame, false_alarm: float = FALSE_ALARM) -> pd
     Each seed fits its detectors on its own reference window, and much of a clean score's
     spread is between seeds, not within one. So a threshold holds the target rate on
     average over deployments but not for each one; the worst seed shows by how much."""
+    lines = out_of_seed_thresholds(df, false_alarm)
     clean = df[df.failure.eq("clean")]
     out = {}
     for name, g in clean.groupby("detector"):
-        rates = []
-        for seed in sorted(g.seed.unique()):
-            line = np.quantile(g[g.seed != seed].score, 1 - false_alarm)
-            rates.append(float((g[g.seed == seed].score > line).mean()))
+        rates = [float((g[g.seed == seed].score > lines[(str(name), seed)]).mean()) for seed in sorted(g.seed.unique())]
         out[str(name)] = {"mean": float(np.mean(rates)), "worst_seed": float(max(rates))}
     return pd.DataFrame(out).T
 
