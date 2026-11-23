@@ -189,9 +189,11 @@ def test_control_metrics_per_failure():
     assert false_alarm_rate(df, "ks_top1", .5, failure="H2") == 1.0
 
 
-def test_false_alarm_boundary_equal_is_alarm():
+def test_false_alarm_boundary_equal_is_not_an_alarm():
+    # strictly above, as in thresholds.py and two_stage: a detector that scores 0 on a
+    # control with a threshold of 0 (re_embed) raises no false alarms
     df = make_df(obs("clean", .9, False), obs("H1", .5, False),
-                 obs("H1", .49, False), obs("H2", .2, False))
+                 obs("H1", .51, False), obs("H2", .2, False))
     assert false_alarm_rate(df, "ks_top1", .5) == pytest.approx(1 / 3)
 
 
@@ -288,8 +290,14 @@ def test_earliness_invalid_settings(kw):
 
 
 def test_earliness_threshold_boundary():
-    df = make_df(*[obs("F1", score, True, severity=.3) for score in [.5] * 4 + [.1]])
+    # an alarm is a score above the threshold, as in thresholds.py and two_stage
+    df = make_df(*[obs("F1", score, True, severity=.3) for score in [.6] * 4 + [.1]])
     assert earliest_detectable_severity(df, "ks_top1", "F1", .5) == pytest.approx(.3)
+
+
+def test_a_score_equal_to_the_threshold_is_not_an_alarm():
+    df = make_df(*[obs("F1", .5, True, severity=.3) for _ in range(5)])
+    assert earliest_detectable_severity(df, "ks_top1", "F1", .5) is None
 
 
 def test_real_resultrow_schema_integration():
