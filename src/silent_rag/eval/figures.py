@@ -135,8 +135,9 @@ def plot_false_alarms(t: dict, path: Path, title: str) -> None:
 def plot_earliness(t: dict, path: Path, title: str) -> None:
     sev = t["earliest"]
     text = sev.apply(lambda col: col.map(lambda v: "never" if np.isnan(v) else f"{v:g}"))
-    # earlier is better, so the earliest severity is darkest
-    _heatmap(1.0 - sev, text, title, path, vmin=0.0, vmax=1.0)
+    # earlier is better, so the earliest severity is darkest. vmin below 0 keeps severity 1
+    # light grey, so it doesn't look like "never", which stays white
+    _heatmap(1.0 - sev, text, title, path, vmin=-0.25, vmax=1.0)
 
 
 def plot_cost_accuracy(t: dict, path: Path, title: str) -> None:
