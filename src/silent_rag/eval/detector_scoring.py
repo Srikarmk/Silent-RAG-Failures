@@ -158,9 +158,9 @@ def negative_control_report(
         "n_harmful_controls": int(controls["harmful"].sum()),
         "n_harmless_controls": len(harmless),
         "harmful_control_rate": float(controls["harmful"].mean()),
-        "control_alarm_rate": float(controls["score"].ge(threshold).mean()),
+        "control_alarm_rate": float(controls["score"].gt(threshold).mean()),
         "false_alarm_rate": (
-            float(harmless["score"].ge(threshold).mean())
+            float(harmless["score"].gt(threshold).mean())
             if len(harmless) else None
         ),
     }
@@ -192,7 +192,7 @@ def severity_detection_table(
     result = []
     for severity, group in rows.groupby("severity", sort=True):
         harmful = group["harmful"]
-        alarm = group["score"].ge(threshold)
+        alarm = group["score"].gt(threshold)
         n_harmful = int(harmful.sum())
         true_alarms = int((harmful & alarm).sum())
         result.append({

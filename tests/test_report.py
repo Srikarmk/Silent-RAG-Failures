@@ -99,3 +99,14 @@ def test_a_seed_is_never_scored_against_its_own_windows():
 def test_one_seed_report_says_false_alarms_need_more_seeds():
     text = R.report(table(seeds=(0,)), min_drops=(0.02,), n_boot=50)
     assert "Needs two or more seeds" in text
+
+
+def test_a_detector_that_scores_zero_never_alarms():
+    # like re_embed on the topic shift and F2: exactly 0 everywhere, so the threshold is 0
+    # and no window is above it
+    df = R.relabel(table(seeds=(0, 1, 2), trials=20), 0.02)
+    df = pd.concat([df, df[df.detector.eq("a")].assign(detector="zero", score=0.0)], ignore_index=True)
+    t = R.alarm_table(df).set_index("detector")
+    assert t.loc["zero", "false alarms: clean"] == 0 and t.loc["zero", "false alarms: H_y"] == 0
+    assert t.loc["zero", "worst seed: H_y"] == 0
+    assert t.loc["zero", "earliest: F1_x"] is None or np.isnan(t.loc["zero", "earliest: F1_x"])
