@@ -1,0 +1,71 @@
+datasets:
+- nfcorpus
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever:
+  revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256
+failures:
+  F5_index_no_normalize:
+    injector: F5_index_no_normalize
+    severities: &id001
+    - 0.1
+    - 0.2
+    - 0.3
+    - 0.4
+    - 0.5
+    - 0.6
+    - 0.7
+    - 0.8
+    - 0.9
+    - 1.0
+  F5_query_cls_pooling:
+    injector: F5_query_cls_pooling
+    severities: *id001
+  H_query_no_normalize:
+    injector: H_query_no_normalize
+    severities: *id001
+detectors:
+- domain_classifier_query
+- domain_classifier_retrieved_docs
+- ks_gap
+- ks_gap_perm
+- ks_gap_z
+- ks_gap_z_perm
+- ks_margin
+- ks_margin_perm
+- ks_margin_z
+- ks_margin_z_perm
+- ks_mean10
+- ks_mean10_perm
+- ks_std10
+- ks_std10_perm
+- ks_top1
+- ks_top1_perm
+- psi_gap
+- psi_gap_perm
+- psi_gap_z
+- psi_gap_z_perm
+- psi_margin
+- psi_margin_perm
+- psi_margin_z
+- psi_margin_z_perm
+- psi_mean10
+- psi_mean10_perm
+- psi_std10
+- psi_std10_perm
+- psi_top1
+- psi_top1_perm
+- qpp_gap
+- qpp_gap_perm
+- qpp_max
+- qpp_max_perm
+- qpp_nqc
+- qpp_nqc_perm
+- re_embed
+window_size: 100
+min_drop: 0.02
+trials: 20
+seeds:
+- 0
+- 1
+- 2
