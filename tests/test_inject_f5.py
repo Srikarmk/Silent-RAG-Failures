@@ -69,6 +69,59 @@ def test_severity_fraction_of_rows_lose_normalisation_and_keep_their_direction(m
     np.testing.assert_allclose(damaged.doc_embeddings[rows] / norms[:, None], state.doc_embeddings[rows], atol=1e-6)
 
 
+def test_baseline_cache_is_left_untouched(monkeypatch):
+    monkeypatch.setattr(IndexWithoutNormalize, "without_normalize", staticmethod(lambda clean_encoder: HashEncoder()))
+    clean = Retriever("clean/model", encoder=HashEncoder())
+    state = clean.embed_corpus(toy_dataset())
+    before = {p.name: p.read_bytes() for p in pipeline.CACHE_DIR.glob("*.npy")}
+    IndexWithoutNormalize().attach(clean, state)
+    after = {p.name: p.read_bytes() for p in pipeline.CACHE_DIR.glob("*.npy")}
+    assert len(before) == 1 and all(after[name] == data for name, data in before.items())
+    new = set(after) - set(before)
+    assert len(new) == 1 and new.pop().startswith("f5_nonorm-")
+
+
+def test_rows_are_nested_across_severities_and_follow_the_seed(monkeypatch):
+    inj, state = attached(monkeypatch, HashEncoder())
+    low, high = (set(changed_rows(inj.apply(state, s, seed=0), state)) for s in (0.2, 0.6))
+    assert low < high
+    other_seed = set(changed_rows(inj.apply(state, 0.6, seed=1), state))
+    assert other_seed != high and len(other_seed) == len(high)
+    np.testing.assert_array_equal(inj.apply(state, 0.6, seed=0).doc_embeddings,
+                                  inj.apply(state, 0.6, seed=0).doc_embeddings)
+
+
+def test_input_is_unchanged_and_other_fields_pass_through(monkeypatch):
+    inj, state = attached(monkeypatch, HashEncoder())
+    before = state.doc_embeddings.copy()
+    damaged = inj.apply(state, 0.9, seed=0)
+    np.testing.assert_array_equal(state.doc_embeddings, before)
+    for field in ("doc_ids", "doc_texts", "query_ids", "query_texts", "query_embeddings", "parent_ids", "config"):
+        assert getattr(damaged, field) is getattr(state, field), field
+
+
+class AlwaysNormalised(HashEncoder):
+    """An encoder whose vectors are unit length whatever it is asked: dropping Normalize changes nothing."""
+
+    def encode(self, texts, **kw):
+        return super().encode(texts, **{**kw, "normalize_embeddings": True})
+
+
+def test_a_setup_that_is_already_unnormalised_is_rejected(monkeypatch):
+    with pytest.raises(ValueError, match="unit length without Normalize too, so nothing would change"):
+        attached(monkeypatch, AlwaysNormalised(), normalize=False)
+
+
+def test_without_normalize_drops_the_normalize_module_and_shares_the_rest():
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.models import Normalize, Pooling
+
+    pooling = Pooling(4)
+    dropped = IndexWithoutNormalize.without_normalize(SentenceTransformer(modules=[pooling, Normalize()], device="cpu"))
+    assert list(dropped) == [pooling]
+    assert list(dropped)[0] is pooling
+
+
 def test_apply_before_attach_is_an_error():
     state = Retriever("clean/model", encoder=HashEncoder()).embed_corpus(toy_dataset())
     with pytest.raises(RuntimeError, match=r"call attach\(\) before apply\(\)"):
