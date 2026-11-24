@@ -11,6 +11,13 @@ Features, from each query's retrieved scores (sorted high to low):
 - mean10: mean of the top 10
 - std10: std of the top 10 (population, ddof=0)
 
+Scale-free versions (#70), for telling a mix of models apart from a whole system that
+moved to a model whose scores sit higher or lower:
+- margin: top1 - mean10. Unchanged if every score of a query moves by the same amount
+- gap_z: gap / std10, and margin_z: margin / std10. Also unchanged if the scores are
+  stretched, i.e. under any a * score + b with a > 0. A query whose top 10 are all
+  equal (std10 = 0) gets 0 for both
+
 Only the first 10 columns are used even if topk_scores is deeper, so the
 features don't change if we start logging more scores later.
 """
@@ -26,7 +33,7 @@ from silent_rag.detect.base import Detector, register
 from silent_rag.types import Observation
 
 DEPTH = 10
-FEATURES = ["top1", "gap", "mean10", "std10"]
+FEATURES = ["top1", "gap", "mean10", "std10", "margin", "gap_z", "margin_z"]
 
 
 def score_features(obs: Observation) -> pd.DataFrame:
@@ -44,12 +51,21 @@ def score_features(obs: Observation) -> pd.DataFrame:
         raise ValueError("topk_scores has non-finite values in the top 10")
     if (np.diff(top, axis=1) > 1e-6).any():
         raise ValueError("topk_scores has to be sorted high to low per query")
+    gap, mean10, std10 = top[:, 0] - top[:, 1], top.mean(axis=1), top.std(axis=1)
+    margin = top[:, 0] - mean10
+
+    def per_std(x):
+        return np.divide(x, std10, out=np.zeros_like(x), where=std10 > 0)
+
     return pd.DataFrame(
         {
             "top1": top[:, 0],
-            "gap": top[:, 0] - top[:, 1],
-            "mean10": top.mean(axis=1),
-            "std10": top.std(axis=1),
+            "gap": gap,
+            "mean10": mean10,
+            "std10": std10,
+            "margin": margin,
+            "gap_z": per_std(gap),
+            "margin_z": per_std(margin),
         },
         index=pd.Index(list(obs.query_ids), name="query_id"),
     )[FEATURES]
