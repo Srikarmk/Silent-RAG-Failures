@@ -1,0 +1,20 @@
+# Calibration for the judge's alarm threshold (#74): the 500-pair judge on clean windows
+# only, seeds 0-6 (combined_scores' training seeds), trials 0-19, so 140 windows instead
+# of 30. Seeds 7-9 stay the test seeds. Same windows as configs/dev_full.yaml. NFCorpus, $0.
+datasets: [nfcorpus]
+model: sentence-transformers/multi-qa-MiniLM-L6-cos-v1
+retriever:
+  revision: b207367332321f8e44f96e224ef15bc607f4dbf0
+  max_seq_length: 256  # title + text truncated at 256 tokens, no chunking (#5)
+# the runner needs a failure; this one barely moves the top results, so its pairs are
+# almost all cached clean pairs. Its rows are ignored: only clean windows calibrate.
+failures:
+  H_mixed_truncation_512:
+    injector: H_mixed_truncation
+    severities: [0.1]
+    max_seq_length: 512
+detectors:
+  - llm_judge: {live: true, queries: 100}
+window_size: 100
+trials: 20
+seeds: [0, 1, 2, 3, 4, 5, 6]

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from silent_rag.detect.features import FeatureDrift, register_per_feature
+from silent_rag.detect.features import FeatureDrift, register_per_feature, register_permutation
 from silent_rag.types import Observation
 
 
@@ -44,11 +44,15 @@ class PSI(FeatureDrift):
 
     def fit(self, reference: Observation) -> None:
         super().fit(reference)
-        self.edges_ = np.unique(np.quantile(self.reference_, np.linspace(0, 1, self.bins + 1)[1:-1]))
+        self.edges_ = self.quantile_edges(self.reference_)
         self.expected_ = self.proportions(self.reference_)
 
-    def proportions(self, values: np.ndarray) -> np.ndarray:
-        counts = np.bincount(np.searchsorted(self.edges_, values, side="right"), minlength=len(self.edges_) + 1)
+    def quantile_edges(self, values: np.ndarray) -> np.ndarray:
+        return np.unique(np.quantile(values, np.linspace(0, 1, self.bins + 1)[1:-1]))
+
+    def proportions(self, values: np.ndarray, edges: np.ndarray | None = None) -> np.ndarray:
+        edges = self.edges_ if edges is None else edges
+        counts = np.bincount(np.searchsorted(edges, values, side="right"), minlength=len(edges) + 1)
         return np.maximum(counts / len(values), self.eps)
 
     def compare(self, reference: np.ndarray, current: np.ndarray) -> float:
@@ -56,5 +60,19 @@ class PSI(FeatureDrift):
         actual = self.proportions(current)
         return float(((actual - self.expected_) * np.log(actual / self.expected_)).sum())
 
+    def statistic(self, reference: np.ndarray, current: np.ndarray) -> float:
+        """PSI with the bins refit on `reference`, for the permutation test (#73).
+
+        Each reshuffle has to redo the whole procedure, binning included. Reusing the
+        bins from fit() compares reshuffled halves against proportions that are exact
+        deciles of the real reference by construction, which no reshuffled reference
+        is: under the null that rejected in ~58% of windows at p < 0.05 instead of ~5%.
+        """
+        edges = self.quantile_edges(reference)
+        expected, actual = self.proportions(reference, edges), self.proportions(current, edges)
+        return float(((actual - expected) * np.log(actual / expected)).sum())
+
 
 PSI_DETECTORS = register_per_feature(PSI, "psi")
+# psi_top1_perm, ...: the same statistic with a per-window permutation p-value (#73)
+PSI_PERMUTATION = {feature: register_permutation(cls) for feature, cls in PSI_DETECTORS.items()}
