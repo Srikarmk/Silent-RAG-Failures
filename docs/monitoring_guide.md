@@ -69,7 +69,7 @@ The query classifier does not detect F1 or F2 because those failures do not chan
 
 **Choosing `min_drop`** (#52)
 
-We agreed on `min_drop = 0.02` for the main evaluation, with `0.01` as a sensitivity check for F2. The config update is still pending.
+We use `min_drop = 0.02` for the main evaluation, with `0.01` as a sensitivity check for F2. This is now set in both the dev and final configs (#88).
 
 At 0.02, none of the negative-control windows were labelled harmful in the development run. But this does not prove equivalence within a defined margin. That requires a separate equivalence test.
 
@@ -81,13 +81,19 @@ We ran a seed-level equivalence check on the negative controls with a ±0.02 mar
 - Full model swaps: not worse than clean, with improved nDCG@10
 - Query topic shift: not tested, since its damage is zero by construction
 
-The margin was not agreed on before the check, so these are exploratory findings (*dev*, #16).
+We use ±0.02 as an exploratory equivalence margin. It was selected after observing the development results, so these findings should not be treated as confirmatory evidence (#16, #60)
 
 The main trade-off is F2. Its damage is real but small. At `min_drop = 0.02`, only 0%, 5%, and 24% of F2 windows are labelled harmful at severities 0.1, 0.5, and 0.9. At 0.01, those rates increase to 0%, 66%, and 80% (*dev*, #52).
 
 A higher threshold can also make AUROC look better by excluding harder cases. We should always report the number of harmful windows alongside detector performance.
 
 Finally, our 100-query window detected a drop of around 0.06 in 80% of trials under the 25% churn setup (#50). This is specific to that experiment, but it shows why detecting smaller drops remains difficult.
+
+Interpreting severity and earliness (#16)
+
+Higher severity does not always mean greater retrieval damage. One F1 MiniLM-L6 severity step remains inconclusive (#93), and F5 index normalization shows a nonmonotonic damage pattern (#101).
+
+For nonmonotonic failures, detection rates should be reported at individual severity levels rather than relying on earliness alone.
 
 ## The re-embedding check
 
