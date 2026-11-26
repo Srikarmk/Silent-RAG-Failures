@@ -58,6 +58,7 @@ failures:
 # the detectors the full dev run graded (dev_full.yaml), plus canary (#98), which probes with
 # 100 training-split queries that never enter a scored window, and combined_scores (#75),
 # with the weights fit on NFCorpus (configs/combined_weights.json)
+# two_stage (#74) is dev-only: each flagged window needs 500 uncached judge calls here
 detectors: [ks_top1, ks_gap, ks_mean10, ks_std10, psi_top1, psi_gap, psi_mean10, psi_std10,
             qpp_max, qpp_nqc, qpp_gap, re_embed, domain_classifier_query, domain_classifier_retrieved_docs,
             canary, combined_scores]
