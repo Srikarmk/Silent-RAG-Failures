@@ -410,6 +410,8 @@ def run_dataset(ds, retriever, cfg, failures: dict, rid: str | None = None) -> l
     fitted = {}
     for name, cls in detectors.items():
         fitted[name] = cls(**params[name])
+        # which dataset this is, for detectors that bring their own queries from it (canaries)
+        fitted[name].dataset = ds.name
         fitted[name].attach(retriever)
         fitted[name].fit(reference)
 
