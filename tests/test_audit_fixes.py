@@ -194,6 +194,95 @@ def test_p_value_is_stored_and_min_drop_gates_harmful(monkeypatch):
     assert not strict.harmful.any()
 
 
+def test_harmful_column_and_run_id_match_the_inline_rule(monkeypatch):
+    """run() labels windows through window_has_significant_ndcg10_drop; the harmful column
+    and run_id are what the former inline rule `p < alpha and drop >= min_drop` gave."""
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    cfg = {"failures": {ScrambleDocs.name: [0.1, 0.9]}, "detectors": [MeanTop1.name], "window_size": 15}
+    alpha, min_drop = 0.05, 0.05
+    df = run(cfg, alpha=alpha, min_drop=min_drop)
+
+    inline = [bool(p < alpha and d >= min_drop) for p, d in zip(df.p_value, df.ndcg_drop)]
+    assert df.harmful.dtype == bool
+    assert df.harmful.tolist() == inline
+    assert df.harmful.any() and not df.harmful.all()  # both labels occur, so the comparison is not vacuous
+
+    full = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, **cfg, "alpha": alpha, "min_drop": min_drop}
+    assert set(df.run_id) == {runner.run_id({**runner.DEFAULTS, **full})}
+
+
+@pytest.mark.parametrize("seeding", [{}, {"seed": 3}, {"seeds": [0, 1]}], ids=["no seed", "seed", "seeds"])
+def test_run_id_from_run_config_equals_the_run_id_column(monkeypatch, seeding):
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    cfg = {"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name], **seeding}
+    df = run(cfg)
+    full = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, **cfg}  # what the run helper passes
+    assert set(df.run_id) == {runner.run_id_from_run_config(full)}
+
+
+RUN_CFG = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, "detectors": ["x"], "seeds": [0, 1]}
+
+
+def test_run_id_from_run_config_ignores_defaults_written_as_stored():
+    explicit = {**RUN_CFG, "k": 10, "alpha": 0.05, "min_drop": 0.0}
+    assert runner.run_id_from_run_config(explicit) == runner.run_id_from_run_config(RUN_CFG)
+
+
+def test_run_id_from_run_config_min_drop_int_changes_run_id():
+    # the hash is of JSON text: 0 and 0.0 serialise differently, so write min_drop: 0.0
+    assert runner.run_id_from_run_config({**RUN_CFG, "min_drop": 0}) != runner.run_id_from_run_config(RUN_CFG)
+
+
+def inline_windows(n_questions, window_size, seed, trial):
+    """run_dataset's window selection as it was written inline before window_question_indices."""
+    order = np.random.default_rng(seed).permutation(n_questions)
+    ref_idx, pool = order[:window_size], order[window_size:]
+    return ref_idx, np.random.default_rng([seed, trial]).choice(pool, window_size, replace=False)
+
+
+@pytest.mark.parametrize("seed, trial", [(0, 0), (0, 7), (3, 0), (3, 19), (9, 5)])
+def test_window_question_indices_equal_the_former_inline_selection(seed, trial):
+    reference, window = runner.window_question_indices(323, 100, seed, trial)
+    expected_reference, expected_window = inline_windows(323, 100, seed, trial)
+    np.testing.assert_array_equal(reference, expected_reference)
+    np.testing.assert_array_equal(window, expected_window)
+    assert len(reference) == len(window) == 100 and not set(reference) & set(window)
+    assert len(set(window.tolist())) == 100
+    again = runner.window_question_indices(323, 100, seed, trial)
+    np.testing.assert_array_equal(again[1], window)
+    np.testing.assert_array_equal(runner.window_question_indices(323, 100, seed, trial + 1)[0], reference)
+
+
+def test_run_output_and_run_id_are_unchanged_by_the_extraction(monkeypatch):
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    cfg = {"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name], "seeds": [0, 1], "trials": 3}
+    now = run(cfg)
+    monkeypatch.setattr(runner, "window_question_indices", inline_windows)  # the former inline selection
+    before = run(cfg)
+    columns = [c for c in now.columns if c != "cost_s"]  # wall-clock time differs run to run
+    pd.testing.assert_frame_equal(now[columns], before[columns])
+    full = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, **cfg}
+    assert set(now.run_id) == {runner.run_id_from_run_config(full)}
+
+
+def test_run_dataset_takes_its_windows_from_window_question_indices(monkeypatch):
+    monkeypatch.setitem(INJECTORS, ScrambleDocs.name, ScrambleDocs)
+    monkeypatch.setitem(DETECTORS, MeanTop1.name, MeanTop1)
+    calls, original = [], runner.window_question_indices
+    monkeypatch.setattr(runner, "window_question_indices", lambda *a, **kw: calls.append((a, kw)) or original(*a, **kw))
+    splits, original_split = [], runner.reference_and_pool_indices
+    monkeypatch.setattr(runner, "reference_and_pool_indices",
+                        lambda *a, **kw: splits.append((a, kw)) or original_split(*a, **kw))
+    run({"failures": {ScrambleDocs.name: [0.5]}, "detectors": [MeanTop1.name]})
+    assert len(calls) == 2 * 2  # each trial of the clean and the scrambled condition
+    # the reference window and pool come from reference_and_pool_indices: once directly in run_dataset,
+    # and once inside each window_question_indices call
+    assert len(splits) == 1 + 2 * 2
+
+
 def test_run_id_ignores_spelled_out_defaults():
     cfg = {"datasets": ["nfcorpus"], "window_size": 10, "trials": 2, "detectors": []}
     assert runner.run_id({**runner.DEFAULTS, **cfg}) == runner.run_id({**runner.DEFAULTS, **cfg, "seed": 0})
@@ -299,6 +388,11 @@ def test_labels_must_differ_beyond_case_and_spaces(label_injectors):
 
 def test_check_config_does_nothing_by_default():
     assert ParamInjector.check_config({"strength": 2}, {"model": "m", "revision": None}) is None
+
+
+def test_modified_document_row_indices_is_none_by_default():
+    assert "modified_document_row_indices" not in vars(ParamInjector)  # it doesn't override the hook
+    assert ParamInjector().modified_document_row_indices(40, 0.5, seed=0) is None
 
 
 class CheckedInjector(ParamInjector):
@@ -457,6 +551,32 @@ def test_duplicate_datasets_run_once():
     assert runner.check_datasets(["nfcorpus", "NFCorpus", "BeIR/nfcorpus"], final=False) == ["nfcorpus"]
 
 
+SPLITS = [(323, 100, 0), (323, 100, 9), (300, 100, 0), (300, 100, 2), (648, 100, 1), (150, 10, 3), (101, 100, 0)]
+# NFCorpus 323, SciFact 300 and FiQA 648 test questions at the run's window size; a small case; one question left over
+
+
+@pytest.mark.parametrize("n_questions, window_size, seed", SPLITS)
+def test_reference_and_pool_indices_split_one_permutation(n_questions, window_size, seed):
+    reference, pool = runner.reference_and_pool_indices(n_questions, window_size, seed)
+    assert len(reference) == window_size and len(pool) == n_questions - window_size
+    assert not set(reference.tolist()) & set(pool.tolist())  # disjoint
+    np.testing.assert_array_equal(np.sort(np.concatenate([reference, pool])), np.arange(n_questions))  # a permutation
+    order = np.random.default_rng(seed).permutation(n_questions)
+    np.testing.assert_array_equal(reference, order[:window_size])  # the first part of default_rng(seed)'s permutation
+    np.testing.assert_array_equal(pool, order[window_size:])
+    again_reference, again_pool = runner.reference_and_pool_indices(n_questions, window_size, seed)  # same seed, same split
+    np.testing.assert_array_equal(again_reference, reference)
+    np.testing.assert_array_equal(again_pool, pool)
+
+
+@pytest.mark.parametrize("n_questions, window_size, seed", [c for c in SPLITS if c[0] - c[1] >= c[1]])
+def test_windows_come_only_from_the_pool(n_questions, window_size, seed):  # cases whose pool holds a whole window
+    reference, pool = runner.reference_and_pool_indices(n_questions, window_size, seed)
+    for trial in range(20):  # the runs' 20 trials per seed
+        window_reference, window = runner.window_question_indices(n_questions, window_size, seed, trial)
+        np.testing.assert_array_equal(window_reference, reference)  # the same reference for every trial
+        assert len(window) == window_size == len(set(window.tolist()))  # no question twice
+        assert set(window.tolist()) <= set(pool.tolist())  # never a reference question
 # running seeds in parts
 
 

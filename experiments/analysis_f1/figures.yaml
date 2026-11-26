@@ -1,0 +1,34 @@
+# Figure style for the F1 analysis (spec 5.13); loaded with PlotStyle.from_yaml. Every key is optional.
+display_names:
+  label:
+    F1_partial_upgrade_minilm: all-MiniLM-L6-v2
+    F1_partial_upgrade_all_minilm_l12_v2: all-MiniLM-L12-v2
+    F1_partial_upgrade_bge: bge-small-en-v1.5
+    F1_partial_upgrade_gte_small: gte-small
+  statistic:
+    ks_top1: "KS, top-1 score"
+    psi_top1: "PSI, top-1 score"
+    re_embed: "recomputation check"
+    ks_mean10: "KS, mean of top-10 scores"         # detect/features.py: mean10 = mean of a question's top 10 retrieved scores
+    ks_gap: "KS, top-1 minus top-2 score"          # detect/features.py: gap = top-1 score minus top-2 score
+  questions:
+    all: "all questions"
+    baseline_ndcg10_above_0: "questions with baseline nDCG@10 > 0"
+  negatives:
+    unmodified: "unmodified"
+    unmodified_and_negative_controls: "unmodified and non-significant negative-control"
+label_offsets:
+  F1_partial_upgrade_gte_small: [-14, -18]
+  F1_partial_upgrade_bge: [14, 18]
+figures:
+  ndcg10_drop_at_severity_vs_mean_cosine:
+    label_offsets:
+      F1_partial_upgrade_minilm: [-14, 18]       # the right-most point: label to its left, inside the axes
+  replacement_model_difference:
+    label_offsets:
+      F1_partial_upgrade_all_minilm_l12_v2: [14, -18]    # below right of its own point, under all-MiniLM-L6-v2's error bar
+  share_of_significant_windows_vs_severity:
+    annotate_ends: false                         # three lines end at 100%: the legend names them
+  spearman_vs_severity:
+    legend: {outside: true, loc: lower center, ncol: 2}   # below the axes: inside, it covers the bands
+    figure: {height: 8.5}                        # room for the legend, so the axes keep about their usual height

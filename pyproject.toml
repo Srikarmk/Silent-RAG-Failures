@@ -27,3 +27,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = ["slow: real models end to end, minutes; excluded by default, run with pytest -m slow"]
+addopts = "-m 'not slow'"
