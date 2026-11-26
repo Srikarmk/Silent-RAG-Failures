@@ -56,9 +56,11 @@ failures:
     severities: [0.1, 0.5, 0.9]
   # F3 is MLDR-only (configs/dev_mldr.yaml). F4 is out of scope (#13). The combined_scores /
   # two_stage detectors (#102) go in the list below if they merge before the freeze.
-# the detectors the full dev run graded (dev_full.yaml)
+# the detectors the full dev run graded (dev_full.yaml), plus canary (#98), which probes with
+# 100 training-split queries that never enter a scored window
 detectors: [ks_top1, ks_gap, ks_mean10, ks_std10, psi_top1, psi_gap, psi_mean10, psi_std10,
-            qpp_max, qpp_nqc, qpp_gap, re_embed, domain_classifier_query, domain_classifier_retrieved_docs]
+            qpp_max, qpp_nqc, qpp_gap, re_embed, domain_classifier_query, domain_classifier_retrieved_docs,
+            canary]
 window_size: 100
 # harmful = p < 0.05 and nDCG@10 drop >= min_drop (#52): no negative control comes out
 # harmful at 0.02; F2 is reported at 0.01 as well, since most of its damage is below 0.02
