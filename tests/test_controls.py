@@ -5,7 +5,7 @@ import pytest
 
 from silent_rag import run as runner
 from silent_rag.inject.base import REGISTRY
-from silent_rag.inject.controls import FullSwap, MixedTruncation
+from silent_rag.inject.controls import FullSwap, MixedTruncation, QueryWithoutNormalize
 from silent_rag.pipeline import Retriever
 from silent_rag.run import load_plugins
 from test_inject_f1 import CLEAN, PINNED, ShiftedEncoder, SmallEncoder
@@ -132,6 +132,64 @@ def test_config_with_a_partial_full_swap_is_rejected_before_anything_runs():
 def test_full_swap_with_another_dimension_is_rejected(monkeypatch):
     with pytest.raises(ValueError, match="32-dim vectors but the index is 64-dim"):
         attach(monkeypatch, FullSwap, SmallEncoder(), PINNED[0])
+
+
+# questions without Normalize
+
+
+class DenseEncoder:
+    """A dense pseudo-random vector per text, of varying length, so scores never tie."""
+
+    def encode(self, texts, batch_size=32, normalize_embeddings=True, convert_to_numpy=True):
+        out = np.stack([np.random.default_rng(list(t.encode())).normal(size=64) for t in texts]).astype(np.float32)
+        if normalize_embeddings:
+            out /= np.linalg.norm(out, axis=1, keepdims=True)
+        return out
+
+
+def no_normalize(monkeypatch):
+    """The control attached to a clean state; its encoder without Normalize is DenseEncoder unnormalised."""
+    monkeypatch.setattr(QueryWithoutNormalize, "without_normalize", staticmethod(lambda clean_encoder: DenseEncoder()))
+    clean = Retriever("clean/model", encoder=DenseEncoder())
+    state = clean.embed_corpus(toy_dataset())
+    inj = QueryWithoutNormalize()
+    inj.attach(clean, state)
+    return inj, state, clean
+
+
+def test_query_no_normalize_is_registered_as_harmless():
+    load_plugins()
+    assert REGISTRY["H_query_no_normalize"] is QueryWithoutNormalize
+    assert not QueryWithoutNormalize.harmful
+
+
+@pytest.mark.parametrize("severity, count", [(0.1, 4), (0.5, 20), (1.0, 40)])
+def test_query_no_normalize_changes_only_the_selected_rows(monkeypatch, severity, count):
+    inj, state, _ = no_normalize(monkeypatch)
+    damaged = inj.apply(state, severity, seed=0)
+    rows = np.flatnonzero((damaged.query_embeddings != state.query_embeddings).any(axis=1))
+    expected = np.random.default_rng(0).permutation(40)[:count]
+    assert sorted(rows) == sorted(expected)
+    np.testing.assert_array_equal(damaged.query_embeddings[rows], inj.query_vectors[rows])
+    for field in ("doc_ids", "doc_texts", "doc_embeddings", "query_ids", "query_texts"):
+        assert getattr(damaged, field) is getattr(state, field), field
+
+
+def test_query_no_normalize_changes_only_the_length(monkeypatch):
+    inj, state, _ = no_normalize(monkeypatch)
+    damaged = inj.apply(state, 1.0, seed=0)
+    norms = np.linalg.norm(damaged.query_embeddings, axis=1, keepdims=True)
+    assert not np.isclose(norms, 1.0).any()
+    np.testing.assert_allclose(damaged.query_embeddings / norms, state.query_embeddings, atol=1e-6)
+
+
+def test_query_no_normalize_leaves_every_ranking_unchanged(monkeypatch):
+    inj, state, clean = no_normalize(monkeypatch)
+    before, scores, _ = clean.search(state, k=40, query_embeddings=state.query_embeddings)
+    assert (-np.diff(scores, axis=1)).min() > 1e-6  # no ties at float32 rounding level (one step ~1e-8 here)
+    damaged = inj.apply(state, 1.0, seed=0)
+    after, _, _ = clean.search(damaged, k=40, query_embeddings=damaged.query_embeddings)
+    assert after == before
 
 
 # both
