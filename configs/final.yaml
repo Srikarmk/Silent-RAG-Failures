@@ -45,8 +45,17 @@ failures:
     severities: [0.1, 0.5, 0.9]
     n_topics: 5
     topic: 0
-  # F3 is MLDR-only (configs/dev_mldr.yaml). F4 is out of scope (#13). F5 (#101) and the
-  # combined_scores / two_stage detectors (#102) go here if they merge before the freeze.
+  # F5 (#101): index built without Normalize, on the F1 grid, and its negative control,
+  # questions without Normalize, on the control grid. CLS pooling is left out: its 0.025
+  # drop on NFCorpus is below what a 100-question window detects.
+  F5_index_no_normalize:
+    injector: F5_index_no_normalize
+    severities: [0.1, 0.3, 0.5, 0.7, 0.9]
+  H_query_no_normalize:
+    injector: H_query_no_normalize
+    severities: [0.1, 0.5, 0.9]
+  # F3 is MLDR-only (configs/dev_mldr.yaml). F4 is out of scope (#13). The combined_scores /
+  # two_stage detectors (#102) go in the list below if they merge before the freeze.
 # the detectors the full dev run graded (dev_full.yaml)
 detectors: [ks_top1, ks_gap, ks_mean10, ks_std10, psi_top1, psi_gap, psi_mean10, psi_std10,
             qpp_max, qpp_nqc, qpp_gap, re_embed, domain_classifier_query, domain_classifier_retrieved_docs]
