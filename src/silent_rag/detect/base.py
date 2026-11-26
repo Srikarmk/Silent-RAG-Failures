@@ -18,6 +18,9 @@ class Detector(ABC):
     # detectors that cache their work set this in score() to what the check takes uncached,
     # recorded as cost_s; None means the runner's wall-clock time of score() is the cost
     last_cost_s: float | None = None
+    # set by the runner before attach(): the dataset being run, for detectors that load
+    # their own queries from it (canary queries come from its training split)
+    dataset: str | None = None
 
     def attach(self, retriever) -> None:
         """Called with the clean retriever, i.e. the model the system is supposed
