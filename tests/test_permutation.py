@@ -27,7 +27,7 @@ def test_every_feature_drift_detector_has_a_permutation_variant():
         assert issubclass(perm, Permutation) and issubclass(perm, base)
         assert perm.feature == base.feature
         assert not issubclass(base, Permutation)  # the plain detectors are untouched
-    assert len([n for n in REGISTRY if n.endswith("_perm")]) == len(BASE)
+    assert len([n for n in REGISTRY if n.endswith("_perm") and not n.startswith("mmd_")]) == len(BASE)  # MMD: test_mmd.py
 
 
 def test_plain_scores_are_unchanged():
